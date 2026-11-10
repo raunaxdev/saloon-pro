@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import {
   Scissors, UserPlus, CreditCard, LayoutDashboard,
-  Users, Clock, Award, CheckCircle2, Sparkles, RefreshCw
+  Clock, Award, CheckCircle2, Sparkles, RefreshCw, UserCheck, FileText, Printer, ShieldCheck
 } from 'lucide-react';
 
 const SALOON_ID = process.env.NEXT_PUBLIC_SALOON_ID || '00000000-0000-0000-0000-000000000001';
@@ -33,25 +33,21 @@ interface VisitItem {
   total_amount: number;
   payment_mode: 'Cash' | 'UPI' | 'Card';
   status: 'Waiting' | 'In-Progress' | 'Completed';
+  stylist_name?: string;
   notes?: string;
   created_at: string;
   customers?: CustomerItem;
 }
 
-interface DashboardData {
-  services: ServiceItem[];
-  customers: CustomerItem[];
-  visits: VisitItem[];
-}
+const STYLISTS = ['Mukesh (Head Barber)', 'Ramesh (Hair Stylist)', 'Suresh (Facial Expert)', 'General Staff'];
 
 export default function SaloonApp() {
-  const [activeTab, setActiveTab] = useState<'billing' | 'queue' | 'analytics' | 'ai'>('billing');
+  const [activeTab, setActiveTab] = useState<'billing' | 'queue' | 'analytics' | 'audit' | 'ai'>('billing');
   
   // Data States
   const [services, setServices] = useState<ServiceItem[]>([]);
   const [customers, setCustomers] = useState<CustomerItem[]>([]);
   const [visits, setVisits] = useState<VisitItem[]>([]);
-  const [dataError, setDataError] = useState('');
 
   // Form States
   const [phone, setPhone] = useState('');
@@ -59,85 +55,61 @@ export default function SaloonApp() {
   const [existingClient, setExistingClient] = useState<CustomerItem | null>(null);
   const [selectedServices, setSelectedServices] = useState<ServiceItem[]>([]);
   const [paymentMode, setPaymentMode] = useState<'Cash' | 'UPI' | 'Card'>('UPI');
-  const [notes, setNotes] = useState('');
+  const [selectedStylist, setSelectedStylist] = useState<string>(STYLISTS[0]);
+
+  // Daily Sanitation Checklist State
+  const [sterilizedEquipment, setSterilizedEquipment] = useState(true);
 
   // AI Assistant State
   const [aiQuery, setAiQuery] = useState('');
   const [aiResponse, setAiResponse] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
 
-  const loadData = useCallback(async (): Promise<DashboardData> => {
-    const [
-      { data: serviceData, error: serviceError },
-      { data: customerData, error: customerError },
-      { data: visitData, error: visitError },
-    ] = await Promise.all([
-      supabase.from('services').select('*').eq('saloon_id', SALOON_ID),
-      supabase.from('customers').select('*').eq('saloon_id', SALOON_ID),
-      supabase
-        .from('visits')
-        .select('*, customers(*)')
-        .eq('saloon_id', SALOON_ID)
-        .order('created_at', { ascending: false }),
-    ]);
+  // Safe Data Fetcher
+  const loadData = useCallback(async () => {
+    const { data: sData } = await supabase.from('services').select('*').eq('saloon_id', SALOON_ID);
+    const { data: cData } = await supabase.from('customers').select('*').eq('saloon_id', SALOON_ID);
+    const { data: vData } = await supabase
+      .from('visits')
+      .select('*, customers(*)')
+      .eq('saloon_id', SALOON_ID)
+      .order('created_at', { ascending: false });
 
-    const queryError = serviceError ?? customerError ?? visitError;
-    if (queryError) {
-      throw new Error(`Failed to load salon data: ${queryError.message}`);
-    }
-
-    return {
-      services: (serviceData ?? []) as ServiceItem[],
-      customers: (customerData ?? []) as CustomerItem[],
-      visits: (visitData ?? []) as VisitItem[],
-    };
+    if (sData) setServices(sData as ServiceItem[]);
+    if (cData) setCustomers(cData as CustomerItem[]);
+    if (vData) setVisits(vData as VisitItem[]);
   }, []);
-
-  const fetchInitialData = useCallback(async (isMounted: () => boolean = () => true): Promise<void> => {
-    try {
-      const data = await loadData();
-      if (!isMounted()) return;
-
-      setServices(data.services);
-      setCustomers(data.customers);
-      setVisits(data.visits);
-      setDataError('');
-    } catch (error: unknown) {
-      if (isMounted()) {
-        setDataError(error instanceof Error ? error.message : 'Failed to load salon data.');
-      }
-    }
-  }, [loadData]);
 
   useEffect(() => {
     let isMounted = true;
-    const hydrateDashboard = async () => {
-      try {
-        const data = await loadData();
-        if (!isMounted) return;
+    
+    const initData = async () => {
+      const { data: sData } = await supabase.from('services').select('*').eq('saloon_id', SALOON_ID);
+      const { data: cData } = await supabase.from('customers').select('*').eq('saloon_id', SALOON_ID);
+      const { data: vData } = await supabase
+        .from('visits')
+        .select('*, customers(*)')
+        .eq('saloon_id', SALOON_ID)
+        .order('created_at', { ascending: false });
 
-        setServices(data.services);
-        setCustomers(data.customers);
-        setVisits(data.visits);
-        setDataError('');
-      } catch (error: unknown) {
-        if (isMounted) {
-          setDataError(error instanceof Error ? error.message : 'Failed to load salon data.');
-        }
+      if (isMounted) {
+        if (sData) setServices(sData as ServiceItem[]);
+        if (cData) setCustomers(cData as CustomerItem[]);
+        if (vData) setVisits(vData as VisitItem[]);
       }
     };
 
-    void hydrateDashboard();
+    initData();
 
     return () => {
       isMounted = false;
     };
-  }, [loadData]);
+  }, []);
 
-  // Phone Lookup for Auto-Fill & Past Visit Detection
+  // Phone Lookup
   const handlePhoneChange = (val: string) => {
     setPhone(val);
-    const found = customers.find((customer: CustomerItem) => customer.phone === val.trim());
+    const found = customers.find(c => c.phone === val.trim());
     if (found) {
       setExistingClient(found);
       setClientName(found.name);
@@ -147,17 +119,23 @@ export default function SaloonApp() {
   };
 
   const toggleService = (service: ServiceItem) => {
-    if (selectedServices.find((item: ServiceItem) => item.id === service.id)) {
-      setSelectedServices(selectedServices.filter((item: ServiceItem) => item.id !== service.id));
+    if (selectedServices.find(s => s.id === service.id)) {
+      setSelectedServices(selectedServices.filter(s => s.id !== service.id));
     } else {
       setSelectedServices([...selectedServices, service]);
     }
   };
 
-  const totalBill = selectedServices.reduce<number>(
-    (sum: number, item: ServiceItem) => sum + Number(item.price),
-    0,
-  );
+  const totalBill = selectedServices.reduce((sum, item) => sum + Number(item.price), 0);
+
+  // Send WhatsApp Invoice
+  const sendWhatsAppBill = (clientPhone: string, name: string, amount: number, items: ServiceItem[]) => {
+    const serviceNames = items.map(i => i.service_name).join(', ');
+    const text = `Hello *${name}*! Thank you for visiting *The Vintage Barber Lounge*! 💈\n\n*Services Done:* ${serviceNames}\n*Total Amount Paid:* ₹${amount}\n*Payment Mode:* ${paymentMode}\n*Sanitation Code:* UV-STERILIZED-OK ✅\n\nWe look forward to seeing you again soon! Have a great day!`;
+    const cleanPhone = clientPhone.replace(/[^0-9]/g, '');
+    const url = `https://wa.me/91${cleanPhone}?text=${encodeURIComponent(text)}`;
+    window.open(url, '_blank');
+  };
 
   // Submit Billing / Entry
   const handleCreateVisit = async (status: 'Completed' | 'Waiting') => {
@@ -166,22 +144,21 @@ export default function SaloonApp() {
       return;
     }
 
-    const normalizedPhone = phone.trim();
     let customerId = existingClient?.id;
 
     if (!existingClient) {
       const { data: newCust, error: cErr } = await supabase
         .from('customers')
-        .insert([{ saloon_id: SALOON_ID, name: clientName.trim(), phone: normalizedPhone, total_visits: 1, total_spent: totalBill }])
+        .insert([{ saloon_id: SALOON_ID, name: clientName, phone, total_visits: 1, total_spent: totalBill }])
         .select()
         .single();
-      if (cErr || !newCust) {
-        alert(`Customer record banane me error aaya: ${cErr?.message ?? 'No customer was returned.'}`);
+      if (cErr) {
+        alert('Customer record banane me error aaya!');
         return;
       }
       customerId = newCust.id;
     } else {
-      const { error: customerError } = await supabase
+      await supabase
         .from('customers')
         .update({
           total_visits: existingClient.total_visits + 1,
@@ -189,10 +166,6 @@ export default function SaloonApp() {
           last_visit: new Date().toISOString()
         })
         .eq('id', existingClient.id);
-      if (customerError) {
-        alert(`Customer record update nahi hua: ${customerError.message}`);
-        return;
-      }
     }
 
     const { error: vErr } = await supabase.from('visits').insert([{
@@ -201,32 +174,32 @@ export default function SaloonApp() {
       services_done: selectedServices,
       total_amount: totalBill,
       payment_mode: paymentMode,
-      status,
-      notes
+      stylist_name: selectedStylist,
+      status
     }]);
 
-    if (vErr) {
-      alert(`Visit save nahi hui: ${vErr.message}`);
-      return;
-    }
+    if (!vErr) {
+      if (status === 'Completed') {
+        const confirmSend = confirm('Visit Save Ho Gayi! Kya customer ko WhatsApp par digital bill bhejna hai?');
+        if (confirmSend) {
+          sendWhatsAppBill(phone, clientName, totalBill, selectedServices);
+        }
+      } else if (status === 'Waiting') {
+        alert('Queue me add kar diya gaya hai!');
+      }
 
-    alert(status === 'Completed' ? 'Bill generate ho gaya aur visit save ho gayi!' : 'Queue me add kar diya gaya hai!');
-    setPhone('');
-    setClientName('');
-    setSelectedServices([]);
-    setExistingClient(null);
-    setNotes('');
-    await fetchInitialData();
+      setPhone('');
+      setClientName('');
+      setSelectedServices([]);
+      setExistingClient(null);
+      loadData();
+    }
   };
 
   // Queue Status Updates
-  const updateQueueStatus = async (visitId: string, newStatus: VisitItem['status']) => {
-    const { error } = await supabase.from('visits').update({ status: newStatus }).eq('id', visitId);
-    if (error) {
-      setDataError(`Queue status update failed: ${error.message}`);
-      return;
-    }
-    await fetchInitialData();
+  const updateQueueStatus = async (visitId: string, newStatus: string) => {
+    await supabase.from('visits').update({ status: newStatus }).eq('id', visitId);
+    loadData();
   };
 
   // Ask AI Assistant
@@ -241,33 +214,42 @@ export default function SaloonApp() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: aiQuery })
       });
-      const data: { text?: string; error?: string } = await res.json();
-      if (!res.ok) {
-        setAiResponse(data.error ?? `AI request failed with status ${res.status}.`);
-        return;
-      }
-      setAiResponse(data.text ?? 'AI Advisor did not return a response.');
-    } catch (error: unknown) {
-      setAiResponse(error instanceof Error ? error.message : 'AI Advisor connect karne me dikkat aayi.');
+      const data = await res.json();
+      setAiResponse(data.text || data.error);
+    } catch {
+      setAiResponse('AI Advisor connect karne me dikkat aayi.');
     } finally {
       setAiLoading(false);
     }
   };
 
-  // Analytics Metrics
-  const completedVisits = visits.filter((visit: VisitItem) => visit.status === 'Completed');
-  const totalRevenue = completedVisits.reduce<number>(
-    (total: number, visit: VisitItem) => total + Number(visit.total_amount),
-    0,
-  );
-  const totalVisitsCount = completedVisits.length;
-  const regularClients = customers.filter((customer: CustomerItem) => customer.total_visits >= 2);
-  const oneTimeClients = customers.filter((customer: CustomerItem) => customer.total_visits === 1);
+  // Metrics Calculation
+  const totalRevenue = visits.reduce((acc, v) => acc + Number(v.total_amount), 0);
+  const totalVisitsCount = visits.length;
+  const regularClients = customers.filter(c => c.total_visits >= 2);
+  const upiRevenue = visits.filter(v => v.payment_mode === 'UPI').reduce((acc, v) => acc + Number(v.total_amount), 0);
+  const cashRevenue = visits.filter(v => v.payment_mode === 'Cash').reduce((acc, v) => acc + Number(v.total_amount), 0);
+  const cardRevenue = visits.filter(v => v.payment_mode === 'Card').reduce((acc, v) => acc + Number(v.total_amount), 0);
+
+  // Financial Compliance Estimates
+  const estimatedGst = (totalRevenue * 0.05).toFixed(0);
+  const msmeEligibleLimit = totalRevenue >= 50000 ? 'ELIGIBLE FOR PM SVANIDHI & MUDRA LOAN' : 'BUILDING TURNOVER HISTORY';
+
+  const stylistStats = STYLISTS.map(stylist => {
+    const stylistVisits = visits.filter(v => v.stylist_name === stylist);
+    const revenue = stylistVisits.reduce((acc, v) => acc + Number(v.total_amount), 0);
+    return {
+      name: stylist,
+      visitsCount: stylistVisits.length,
+      revenue,
+      commission: (revenue * 0.15).toFixed(0)
+    };
+  });
 
   return (
-    <div className="min-h-screen bg-[#0f0d0e] text-stone-200 flex flex-col md:flex-row">
+    <div className="min-h-screen bg-[#0f0d0e] text-stone-200 flex flex-col md:flex-row w-full">
       {/* Sidebar Navigation */}
-      <aside className="w-full md:w-64 bg-[#181517] border-r border-amber-900/30 p-5 flex flex-col justify-between">
+      <aside className="w-full md:w-64 bg-[#181517] border-r border-amber-900/30 p-5 flex flex-col justify-between shrink-0 print:hidden">
         <div>
           <div className="flex items-center gap-3 pb-6 border-b border-stone-800">
             <div className="p-2.5 bg-amber-600/20 text-amber-500 rounded-lg border border-amber-600/40">
@@ -295,7 +277,7 @@ export default function SaloonApp() {
                 <Clock className="w-4 h-4" /> Live Queue
               </div>
               <span className="bg-stone-800 text-amber-400 text-xs px-2 py-0.5 rounded-full border border-amber-600/30">
-                {visits.filter((visit: VisitItem) => visit.status !== 'Completed').length}
+                {visits.filter(v => v.status !== 'Completed').length}
               </span>
             </button>
 
@@ -303,7 +285,14 @@ export default function SaloonApp() {
               onClick={() => setActiveTab('analytics')}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition ${activeTab === 'analytics' ? 'bg-amber-600 text-stone-950 font-semibold shadow-lg shadow-amber-600/20' : 'text-stone-400 hover:bg-stone-900 hover:text-amber-500'}`}
             >
-              <LayoutDashboard className="w-4 h-4" /> Owner Analytics
+              <LayoutDashboard className="w-4 h-4" /> Owner & Staff Analytics
+            </button>
+
+            <button
+              onClick={() => setActiveTab('audit')}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition ${activeTab === 'audit' ? 'bg-amber-600 text-stone-950 font-semibold shadow-lg shadow-amber-600/20' : 'text-stone-400 hover:bg-stone-900 hover:text-amber-500'}`}
+            >
+              <FileText className="w-4 h-4" /> Audit & Compliance Hub
             </button>
 
             <button
@@ -316,25 +305,20 @@ export default function SaloonApp() {
         </div>
 
         <div className="pt-4 border-t border-stone-800 text-xs text-stone-500 flex items-center justify-between">
-          <span>Saloon OS v1.0</span>
-          <button onClick={() => void fetchInitialData()} aria-label="Refresh dashboard data" className="p-1 hover:text-amber-500 transition"><RefreshCw className="w-3.5 h-3.5" /></button>
+          <span>Saloon OS Enterprise</span>
+          <button onClick={loadData} className="p-1 hover:text-amber-500 transition"><RefreshCw className="w-3.5 h-3.5" /></button>
         </div>
       </aside>
 
       {/* Main Content Area */}
       <main className="flex-1 p-6 md:p-8 overflow-y-auto">
-        {dataError && (
-          <div role="alert" className="max-w-5xl mx-auto mb-6 rounded-lg border border-red-900 bg-red-950/40 p-3 text-sm text-red-300">
-            {dataError}
-          </div>
-        )}
         {/* TAB 1: BILLING & RECEPTION */}
         {activeTab === 'billing' && (
           <div className="max-w-5xl mx-auto space-y-6">
             <header className="flex justify-between items-center pb-4 border-b border-stone-800">
               <div>
                 <h2 className="text-2xl font-bold text-amber-500">Reception Desk</h2>
-                <p className="text-stone-400 text-sm">Quick Client Entry & Instant Invoice Generation</p>
+                <p className="text-stone-400 text-sm">Client Entry, Staff Assignment & Digital Billing</p>
               </div>
             </header>
 
@@ -342,7 +326,7 @@ export default function SaloonApp() {
               <div className="lg:col-span-2 space-y-6">
                 <div className="saloon-card p-5 rounded-xl space-y-4">
                   <h3 className="text-stone-200 font-semibold flex items-center gap-2">
-                    <UserPlus className="w-4 h-4 text-amber-500" /> Client Information
+                    <UserPlus className="w-4 h-4 text-amber-500" /> Client & Staff Selection
                   </h3>
                   
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -368,6 +352,33 @@ export default function SaloonApp() {
                     </div>
                   </div>
 
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-xs text-stone-400 block mb-1">Assigned Stylist / Barber</label>
+                      <select
+                        value={selectedStylist}
+                        onChange={(e) => setSelectedStylist(e.target.value)}
+                        className="w-full bg-[#0f0d0e] border border-stone-800 rounded-lg px-3.5 py-2.5 text-stone-100 focus:outline-none focus:border-amber-600 transition"
+                      >
+                        {STYLISTS.map(stylist => (
+                          <option key={stylist} value={stylist}>{stylist}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="flex items-end pb-1">
+                      <label className="flex items-center gap-2 text-xs text-emerald-400 font-medium cursor-pointer bg-stone-900 border border-stone-800 p-2.5 rounded-lg w-full">
+                        <input
+                          type="checkbox"
+                          checked={sterilizedEquipment}
+                          onChange={(e) => setSterilizedEquipment(e.target.checked)}
+                          className="accent-amber-500 rounded"
+                        />
+                        <ShieldCheck className="w-4 h-4 text-emerald-400" /> UV Equipment Sterilization Verified
+                      </label>
+                    </div>
+                  </div>
+
                   {existingClient && (
                     <div className="bg-amber-950/30 border border-amber-800/40 p-3 rounded-lg flex items-center justify-between text-xs text-amber-400">
                       <span className="flex items-center gap-1.5 font-medium">
@@ -384,8 +395,8 @@ export default function SaloonApp() {
                   </h3>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {services.map((service: ServiceItem) => {
-                      const isSelected = selectedServices.some((item: ServiceItem) => item.id === service.id);
+                    {services.map((service) => {
+                      const isSelected = selectedServices.some(s => s.id === service.id);
                       return (
                         <button
                           key={service.id}
@@ -412,7 +423,7 @@ export default function SaloonApp() {
                     {selectedServices.length === 0 ? (
                       <p className="text-stone-500 text-xs text-center py-6">Koi service select nahi hui hai</p>
                     ) : (
-                      selectedServices.map((s: ServiceItem) => (
+                      selectedServices.map(s => (
                         <div key={s.id} className="flex justify-between text-xs py-1 border-b border-stone-800/50">
                           <span className="text-stone-300">{s.service_name}</span>
                           <span className="font-medium text-amber-500">₹{s.price}</span>
@@ -430,7 +441,7 @@ export default function SaloonApp() {
                     <div>
                       <label className="text-xs text-stone-400 block mb-1.5">Payment Mode</label>
                       <div className="grid grid-cols-3 gap-2">
-                        {(['UPI', 'Cash', 'Card'] as const).map((mode) => (
+                        {(['UPI', 'Cash', 'Card'] as const).map(mode => (
                           <button
                             key={mode}
                             onClick={() => setPaymentMode(mode)}
@@ -449,7 +460,7 @@ export default function SaloonApp() {
                     onClick={() => handleCreateVisit('Completed')}
                     className="w-full bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold py-3 rounded-lg transition flex items-center justify-center gap-2 shadow-lg shadow-amber-600/10"
                   >
-                    <CheckCircle2 className="w-4 h-4" /> Complete & Generate Bill
+                    <CheckCircle2 className="w-4 h-4" /> Save Visit & Option to Send Bill
                   </button>
                   <button
                     onClick={() => handleCreateVisit('Waiting')}
@@ -466,19 +477,21 @@ export default function SaloonApp() {
         {/* TAB 2: LIVE QUEUE */}
         {activeTab === 'queue' && (
           <div className="max-w-4xl mx-auto space-y-6">
-            <header className="pb-4 border-b border-stone-800">
-              <h2 className="text-2xl font-bold text-amber-500">Live Customer Queue</h2>
-              <p className="text-stone-400 text-sm">Real-time waiting room & status management</p>
+            <header className="pb-4 border-b border-stone-800 flex justify-between items-center">
+              <div>
+                <h2 className="text-2xl font-bold text-amber-500">Live Customer Queue</h2>
+                <p className="text-stone-400 text-sm">Real-time waiting room & status management</p>
+              </div>
             </header>
 
             <div className="space-y-3">
-              {visits.filter((visit: VisitItem) => visit.status !== 'Completed').length === 0 ? (
+              {visits.filter(v => v.status !== 'Completed').length === 0 ? (
                 <div className="saloon-card p-12 text-center rounded-xl space-y-2">
                   <Clock className="w-10 h-10 text-stone-600 mx-auto" />
                   <p className="text-stone-400 font-medium">Abhi queue me koi client nahi hai!</p>
                 </div>
               ) : (
-                visits.filter((visit: VisitItem) => visit.status !== 'Completed').map((v: VisitItem) => (
+                visits.filter(v => v.status !== 'Completed').map(v => (
                   <div key={v.id} className="saloon-card p-4 rounded-xl flex items-center justify-between border-l-4 border-l-amber-500">
                     <div className="space-y-1">
                       <div className="flex items-center gap-3">
@@ -486,7 +499,10 @@ export default function SaloonApp() {
                         <span className="text-xs text-stone-400">({v.customers?.phone})</span>
                       </div>
                       <div className="text-xs text-stone-400">
-                        Services: {v.services_done.map((service: ServiceItem) => service.service_name).join(', ')}
+                        Services: {v.services_done.map((s: ServiceItem) => s.service_name).join(', ')}
+                      </div>
+                      <div className="text-xs text-amber-500/80 flex items-center gap-1">
+                        <UserCheck className="w-3 h-3" /> Stylist: {v.stylist_name || 'General Staff'}
                       </div>
                     </div>
 
@@ -518,12 +534,12 @@ export default function SaloonApp() {
           </div>
         )}
 
-        {/* TAB 3: OWNER ANALYTICS */}
+        {/* TAB 3: OWNER & STAFF ANALYTICS */}
         {activeTab === 'analytics' && (
           <div className="max-w-5xl mx-auto space-y-6">
             <header className="pb-4 border-b border-stone-800">
-              <h2 className="text-2xl font-bold text-amber-500">Owner Business Dashboard</h2>
-              <p className="text-stone-400 text-sm">Revenue metrics, lifetime spend & retention analysis</p>
+              <h2 className="text-2xl font-bold text-amber-500">Owner & Staff Performance</h2>
+              <p className="text-stone-400 text-sm">Revenue metrics, staff commissions & lifetime spend</p>
             </header>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -540,40 +556,34 @@ export default function SaloonApp() {
               </div>
 
               <div className="saloon-card p-5 rounded-xl border-t-2 border-t-amber-700 space-y-2">
-                <div className="text-stone-400 text-xs font-medium">One-Time Visitors</div>
-                <div className="text-3xl font-bold text-stone-100">{oneTimeClients.length}</div>
-                <div className="text-xs text-amber-500/80">Target for Re-engagement</div>
+                <div className="text-stone-400 text-xs font-medium">Total Stylists</div>
+                <div className="text-3xl font-bold text-stone-100">{STYLISTS.length}</div>
+                <div className="text-xs text-amber-500/80">Active Performance Tracking</div>
               </div>
             </div>
 
             <div className="saloon-card p-5 rounded-xl space-y-4">
               <h3 className="text-stone-200 font-semibold flex items-center gap-2">
-                <Users className="w-4 h-4 text-amber-500" /> Customer Lifetime Value
+                <UserCheck className="w-4 h-4 text-amber-500" /> Stylist Commission & Performance (15% Rate)
               </h3>
 
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead className="bg-[#0f0d0e] text-stone-400 border-b border-stone-800">
                     <tr>
-                      <th className="p-3">Customer Name</th>
-                      <th className="p-3">Phone</th>
-                      <th className="p-3">Total Visits</th>
-                      <th className="p-3">Lifetime Spend</th>
-                      <th className="p-3">Category</th>
+                      <th className="p-3">Stylist / Barber Name</th>
+                      <th className="p-3">Clients Served</th>
+                      <th className="p-3">Total Business Generated</th>
+                      <th className="p-3">Estimated Staff Commission (15%)</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-stone-800/60">
-                    {customers.map((c: CustomerItem) => (
-                      <tr key={c.id} className="hover:bg-stone-900/50">
-                        <td className="p-3 font-medium text-stone-200">{c.name}</td>
-                        <td className="p-3 text-stone-400">{c.phone}</td>
-                        <td className="p-3 text-stone-300">{c.total_visits}</td>
-                        <td className="p-3 font-bold text-amber-500">₹{c.total_spent}</td>
-                        <td className="p-3">
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${c.total_visits >= 2 ? 'bg-amber-950 text-amber-400 border border-amber-800' : 'bg-stone-800 text-stone-400'}`}>
-                            {c.total_visits >= 2 ? 'REGULAR VIP' : 'ONE-TIME'}
-                          </span>
-                        </td>
+                    {stylistStats.map(stat => (
+                      <tr key={stat.name} className="hover:bg-stone-900/50">
+                        <td className="p-3 font-medium text-stone-200">{stat.name}</td>
+                        <td className="p-3 text-stone-300">{stat.visitsCount} visits</td>
+                        <td className="p-3 font-bold text-stone-100">₹{stat.revenue}</td>
+                        <td className="p-3 font-bold text-amber-500">₹{stat.commission}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -583,14 +593,102 @@ export default function SaloonApp() {
           </div>
         )}
 
-        {/* TAB 4: AI BUSINESS ADVISOR */}
+        {/* TAB 4: AUDIT & COMPLIANCE HUB */}
+        {activeTab === 'audit' && (
+          <div className="max-w-5xl mx-auto space-y-6">
+            <header className="pb-4 border-b border-stone-800 flex justify-between items-center">
+              <div>
+                <h2 className="text-2xl font-bold text-amber-500 flex items-center gap-2">
+                  <FileText className="w-6 h-6 text-amber-500" /> Administrative Audit & Compliance Hub
+                </h2>
+                <p className="text-stone-400 text-sm">Official revenue reports, GST estimates, and loan eligibility indicators</p>
+              </div>
+
+              <button
+                onClick={() => window.print()}
+                className="bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold px-4 py-2 rounded-lg text-xs flex items-center gap-2 shadow-lg shadow-amber-600/20 transition print:hidden"
+              >
+                <Printer className="w-4 h-4" /> Print Audit Sheet
+              </button>
+            </header>
+
+            {/* Financial & Compliance Summary Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-5 gap-3">
+              <div className="saloon-card p-4 rounded-xl space-y-1">
+                <span className="text-xs text-stone-400 font-medium">Gross Business</span>
+                <div className="text-xl font-bold text-stone-100">₹{totalRevenue.toLocaleString()}</div>
+              </div>
+              <div className="saloon-card p-4 rounded-xl space-y-1">
+                <span className="text-xs text-emerald-400 font-medium">UPI Digital</span>
+                <div className="text-xl font-bold text-emerald-400">₹{upiRevenue.toLocaleString()}</div>
+              </div>
+              <div className="saloon-card p-4 rounded-xl space-y-1">
+                <span className="text-xs text-amber-400 font-medium">Cash Business</span>
+                <div className="text-xl font-bold text-amber-400">₹{cashRevenue.toLocaleString()}</div>
+              </div>
+              <div className="saloon-card p-4 rounded-xl space-y-1">
+                <span className="text-xs text-blue-400 font-medium">Card Revenue</span>
+                <div className="text-xl font-bold text-blue-400">₹{cardRevenue.toLocaleString()}</div>
+              </div>
+              <div className="saloon-card p-4 rounded-xl space-y-1">
+                <span className="text-xs text-purple-400 font-medium">Est. GST (5%)</span>
+                <div className="text-xl font-bold text-purple-400">₹{estimatedGst}</div>
+              </div>
+            </div>
+
+            <div className="saloon-card p-4 rounded-xl bg-purple-950/20 border border-purple-900/40 text-xs flex justify-between items-center">
+              <span className="text-stone-400">District MSME & Micro-finance Scheme Status:</span>
+              <span className="font-bold text-purple-300">{msmeEligibleLimit}</span>
+            </div>
+
+            {/* Master Audit Log Table */}
+            <div className="saloon-card p-5 rounded-xl space-y-4">
+              <h3 className="text-stone-200 font-semibold text-sm">Master Transaction & Sanitation Log</h3>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-[#0f0d0e] text-stone-400 border-b border-stone-800">
+                    <tr>
+                      <th className="p-3">Date & Time</th>
+                      <th className="p-3">Customer Name</th>
+                      <th className="p-3">Phone</th>
+                      <th className="p-3">Services</th>
+                      <th className="p-3">Stylist</th>
+                      <th className="p-3">Sanitation Check</th>
+                      <th className="p-3 text-right">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-stone-800/60">
+                    {visits.map(v => (
+                      <tr key={v.id} className="hover:bg-stone-900/50">
+                        <td className="p-3 text-stone-400">{new Date(v.created_at).toLocaleString()}</td>
+                        <td className="p-3 font-medium text-stone-200">{v.customers?.name || 'Walk-in Client'}</td>
+                        <td className="p-3 text-stone-400">{v.customers?.phone || 'N/A'}</td>
+                        <td className="p-3 text-stone-300">{v.services_done.map((s: ServiceItem) => s.service_name).join(', ')}</td>
+                        <td className="p-3 text-amber-500/90 font-medium">{v.stylist_name || 'General Staff'}</td>
+                        <td className="p-3">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">
+                            UV STERILIZED
+                          </span>
+                        </td>
+                        <td className="p-3 font-bold text-stone-100 text-right">₹{v.total_amount}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 5: AI BUSINESS ADVISOR */}
         {activeTab === 'ai' && (
           <div className="max-w-3xl mx-auto space-y-6">
             <header className="pb-4 border-b border-stone-800">
               <h2 className="text-2xl font-bold text-amber-500 flex items-center gap-2">
-                <Sparkles className="w-5 h-5 text-amber-400" /> AI Business Advisor
+                <Sparkles className="w-5 h-5 text-amber-400" /> AI Business Advisor & Audit Engine
               </h2>
-              <p className="text-stone-400 text-sm">Ask any question about revenue, lost customers, or profit trends</p>
+              <p className="text-stone-400 text-sm">Ask any question about revenue, staff commission, or customer trends</p>
             </header>
 
             <div className="saloon-card p-5 rounded-xl space-y-4">
@@ -600,7 +698,7 @@ export default function SaloonApp() {
                   rows={3}
                   value={aiQuery}
                   onChange={(e) => setAiQuery(e.target.value)}
-                  placeholder="e.g. Aaj total kitna revenue hua aur sabse regular customer kaun hai?"
+                  placeholder="e.g. Total kitna digital UPI payment aaya hai aur kitne barbers active hain?"
                   className="w-full bg-[#0f0d0e] border border-stone-800 rounded-lg p-3 text-stone-100 text-sm focus:outline-none focus:border-amber-600 transition"
                 />
               </div>

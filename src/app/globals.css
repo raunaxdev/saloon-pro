@@ -1,41 +1,23 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
-:root {
-  --background: #0f0d0e;
-  --card-bg: #181517;
-  --amber-gold: #d97706;
-  --amber-light: #f59e0b;
-  --warm-gray: #a8a29e;
-}
+@layer base {
+  :root {
+    --background: #0f0d0e;
+    --card-bg: #181517;
+  }
 
-body {
-  background-color: var(--background);
-  color: #f5f5f4;
-  font-family: system-ui, -apple-system, sans-serif;
+  body {
+    background-color: var(--background);
+    color: #f5f5f4;
+    font-family: system-ui, -apple-system, sans-serif;
+  }
 }
 
 .saloon-card {
-  background-color: var(--card-bg);
+  background-color: #181517;
   border: 1px solid #292524;
 }
 
 .saloon-card:hover {
   border-color: #78350f;
-}
-
-/* Custom Scrollbar for Saloon Vibe */
-::-webkit-scrollbar {
-  width: 6px;
-}
-::-webkit-scrollbar-track {
-  background: #0f0d0e;
-}
-::-webkit-scrollbar-thumb {
-  background: #292524;
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #78350f;
 }
