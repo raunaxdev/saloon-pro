@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import {
   Scissors, UserPlus, CreditCard, LayoutDashboard,
-  Clock, Award, CheckCircle2, Sparkles, RefreshCw, UserCheck, FileText, Printer, ShieldCheck
+  Clock, Award, CheckCircle2, Sparkles, RefreshCw, UserCheck, FileText, Printer, ShieldCheck, X
 } from 'lucide-react';
 
 const SALOON_ID = process.env.NEXT_PUBLIC_SALOON_ID || '00000000-0000-0000-0000-000000000001';
@@ -59,6 +59,17 @@ export default function SaloonApp() {
 
   // Daily Sanitation Checklist State
   const [sterilizedEquipment, setSterilizedEquipment] = useState(true);
+
+  // Active Receipt Modal State
+  const [activeReceipt, setActiveReceipt] = useState<{
+    name: string;
+    phone: string;
+    services: ServiceItem[];
+    amount: number;
+    paymentMode: string;
+    stylist: string;
+    date: string;
+  } | null>(null);
 
   // AI Assistant State
   const [aiQuery, setAiQuery] = useState('');
@@ -180,10 +191,15 @@ export default function SaloonApp() {
 
     if (!vErr) {
       if (status === 'Completed') {
-        const confirmSend = confirm('Visit Save Ho Gayi! Kya customer ko WhatsApp par digital bill bhejna hai?');
-        if (confirmSend) {
-          sendWhatsAppBill(phone, clientName, totalBill, selectedServices);
-        }
+        setActiveReceipt({
+          name: clientName,
+          phone,
+          services: selectedServices,
+          amount: totalBill,
+          paymentMode,
+          stylist: selectedStylist,
+          date: new Date().toLocaleString()
+        });
       } else if (status === 'Waiting') {
         alert('Queue me add kar diya gaya hai!');
       }
@@ -460,7 +476,7 @@ export default function SaloonApp() {
                     onClick={() => handleCreateVisit('Completed')}
                     className="w-full bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold py-3 rounded-lg transition flex items-center justify-center gap-2 shadow-lg shadow-amber-600/10"
                   >
-                    <CheckCircle2 className="w-4 h-4" /> Save Visit & Option to Send Bill
+                    <CheckCircle2 className="w-4 h-4" /> Save Visit & Generate Receipt
                   </button>
                   <button
                     onClick={() => handleCreateVisit('Waiting')}
@@ -469,6 +485,67 @@ export default function SaloonApp() {
                     Add to Waiting Queue
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* RECEIPT POPUP MODAL */}
+        {activeReceipt && (
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+            <div className="bg-white text-stone-900 p-6 rounded-xl max-w-sm w-full space-y-4 font-mono shadow-2xl relative">
+              <button
+                onClick={() => setActiveReceipt(null)}
+                className="absolute top-3 right-3 text-stone-500 hover:text-stone-900"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <div className="text-center pb-3 border-b border-dashed border-stone-400 space-y-1">
+                <h3 className="font-bold text-lg">VINTAGE BARBER LOUNGE</h3>
+                <p className="text-xs text-stone-600">Official Customer Invoice</p>
+                <div className="text-[10px] text-stone-500">{activeReceipt.date}</div>
+              </div>
+
+              <div className="text-xs space-y-1">
+                <div className="flex justify-between"><span>Customer:</span><span className="font-bold">{activeReceipt.name}</span></div>
+                <div className="flex justify-between"><span>Phone:</span><span>{activeReceipt.phone}</span></div>
+                <div className="flex justify-between"><span>Stylist:</span><span>{activeReceipt.stylist}</span></div>
+                <div className="flex justify-between"><span>Status:</span><span className="text-emerald-700 font-bold">PAID ({activeReceipt.paymentMode})</span></div>
+              </div>
+
+              <div className="py-2 border-t border-b border-dashed border-stone-400 space-y-1 text-xs">
+                {activeReceipt.services.map(s => (
+                  <div key={s.id} className="flex justify-between">
+                    <span>{s.service_name}</span>
+                    <span>₹{s.price}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex justify-between font-bold text-sm">
+                <span>TOTAL:</span>
+                <span>₹{activeReceipt.amount}</span>
+              </div>
+
+              <div className="text-[10px] text-center text-stone-500 pt-2 border-t border-dashed border-stone-300 space-y-1">
+                <p>UV Equipment Sterilized Logged ✅</p>
+                <p>Thank you for visiting! Have a great day!</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 pt-2">
+                <button
+                  onClick={() => window.print()}
+                  className="bg-stone-900 text-white py-2 rounded text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-stone-800"
+                >
+                  <Printer className="w-3.5 h-3.5" /> Print Slip
+                </button>
+                <button
+                  onClick={() => sendWhatsAppBill(activeReceipt.phone, activeReceipt.name, activeReceipt.amount, activeReceipt.services)}
+                  className="bg-emerald-600 text-white py-2 rounded text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-emerald-500"
+                >
+                  WhatsApp
+                </button>
               </div>
             </div>
           </div>
