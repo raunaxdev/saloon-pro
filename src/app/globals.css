@@ -47,6 +47,7 @@
     top: 0;
     width: 72mm !important;
     max-width: 72mm !important;
+    box-sizing: border-box !important;
     min-height: 0 !important;
     margin: 0;
     padding: 4mm !important;

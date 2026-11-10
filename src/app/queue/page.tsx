@@ -19,31 +19,37 @@ export default function QueueDisplayPage() {
   const isMountedRef = useRef(false);
   const fetchRequestRef = useRef(0);
   const fetchInProgressRef = useRef(false);
+  const fetchAbortControllerRef = useRef<AbortController | null>(null);
 
   const fetchQueue = useCallback(async () => {
     if (fetchInProgressRef.current) return;
     fetchInProgressRef.current = true;
+    const controller = new AbortController();
+    fetchAbortControllerRef.current = controller;
     const requestId = ++fetchRequestRef.current;
     try {
       const saloonId = getSaloonId();
       const data = await fetchAllRows((from, to) => supabase
         .from('visits')
-        .select('*, customers(name)')
+        .select('*, customers!visits_customer_id_fkey(name)')
         .eq('saloon_id', saloonId)
         .neq('status', 'Completed')
         .order('created_at', { ascending: true })
-        .range(from, to));
+        .range(from, to)
+        .abortSignal(controller.signal));
       if (isMountedRef.current && requestId === fetchRequestRef.current) {
         setQueue(data);
         setDataError('');
       }
     } catch (error) {
+      if (controller.signal.aborted) return;
       console.error('Failed to load queue:', error);
       if (isMountedRef.current && requestId === fetchRequestRef.current) {
         setDataError('Could not load the live queue. Check your connection and membership, then retry.');
       }
     } finally {
       fetchInProgressRef.current = false;
+      if (fetchAbortControllerRef.current === controller) fetchAbortControllerRef.current = null;
     }
   }, []);
 
@@ -59,6 +65,7 @@ export default function QueueDisplayPage() {
     return () => {
       isMountedRef.current = false;
       fetchRequestRef.current += 1;
+      fetchAbortControllerRef.current?.abort();
       window.clearTimeout(initialLoad);
       clearInterval(interval);
     };

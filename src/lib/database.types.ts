@@ -165,6 +165,13 @@ export interface Database {
             referencedRelation: 'customers';
             referencedColumns: ['id'];
           },
+          {
+            foreignKeyName: 'visits_customer_saloon_fkey';
+            columns: ['customer_id', 'saloon_id'];
+            isOneToOne: false;
+            referencedRelation: 'customers';
+            referencedColumns: ['id', 'saloon_id'];
+          },
         ];
       };
     };

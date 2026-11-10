@@ -65,6 +65,7 @@ export default function SaloonApp() {
   const [savingVisit, setSavingVisit] = useState(false);
   const isMountedRef = useRef(false);
   const loadRequestRef = useRef(0);
+  const loadAbortControllerRef = useRef<AbortController | null>(null);
   const aiAbortControllerRef = useRef<AbortController | null>(null);
 
   // Form States
@@ -96,18 +97,32 @@ export default function SaloonApp() {
   const [aiLoading, setAiLoading] = useState(false);
 
   const loadData = useCallback(async () => {
+    loadAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortControllerRef.current = controller;
     const requestId = ++loadRequestRef.current;
     try {
       const saloonId = getSaloonId();
       const [servicesData, customersData, visitsData] = await Promise.all([
-        fetchAllRows((from, to) => supabase.from('services').select('*').eq('saloon_id', saloonId).range(from, to)),
-        fetchAllRows((from, to) => supabase.from('customers').select('*').eq('saloon_id', saloonId).range(from, to)),
+        fetchAllRows((from, to) => supabase
+          .from('services')
+          .select('*')
+          .eq('saloon_id', saloonId)
+          .range(from, to)
+          .abortSignal(controller.signal)),
+        fetchAllRows((from, to) => supabase
+          .from('customers')
+          .select('*')
+          .eq('saloon_id', saloonId)
+          .range(from, to)
+          .abortSignal(controller.signal)),
         fetchAllRows((from, to) => supabase
           .from('visits')
-          .select('*, customers(*)')
+          .select('*, customers!visits_customer_id_fkey(*)')
           .eq('saloon_id', saloonId)
           .order('created_at', { ascending: false })
-          .range(from, to)),
+          .range(from, to)
+          .abortSignal(controller.signal)),
       ]);
       if (isMountedRef.current && requestId === loadRequestRef.current) {
         setServices(servicesData);
@@ -116,10 +131,13 @@ export default function SaloonApp() {
         setApiError(null);
       }
     } catch (error) {
+      if (controller.signal.aborted) return;
       console.error('Failed to load saloon data:', error);
       if (isMountedRef.current && requestId === loadRequestRef.current) {
         setApiError('Could not load saloon data. Check your connection and membership, then retry.');
       }
+    } finally {
+      if (loadAbortControllerRef.current === controller) loadAbortControllerRef.current = null;
     }
   }, []);
 
@@ -132,6 +150,7 @@ export default function SaloonApp() {
       window.clearTimeout(initialLoad);
       isMountedRef.current = false;
       loadRequestRef.current += 1;
+      loadAbortControllerRef.current?.abort();
       aiAbortControllerRef.current?.abort();
     };
   }, [loadData]);
@@ -314,7 +333,6 @@ export default function SaloonApp() {
 
   return (
     <div className={`min-h-screen bg-[#0f0d0e] text-stone-200 flex flex-col md:flex-row w-full ${activeReceipt ? 'print-receipt' : ''} ${activeTab === 'audit' ? 'print-audit' : ''}`}>
-      {/* Sidebar Navigation */}
       <aside className="w-full md:w-64 bg-[#181517] border-r border-amber-900/30 p-5 flex flex-col justify-between shrink-0 print:hidden">
         <div>
           <div className="flex items-center gap-3 pb-6 border-b border-stone-800">
@@ -381,7 +399,6 @@ export default function SaloonApp() {
         </div>
       </aside>
 
-      {/* Main Content Area */}
       <main className="flex-1 p-6 md:p-8 overflow-y-auto">
         {apiError && (
           <div className="mb-6 p-4 rounded-xl bg-red-950/40 border border-red-800/60 text-red-400 text-xs flex items-center gap-3 print:hidden">
