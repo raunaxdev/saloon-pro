@@ -1,36 +1,51 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Saloon Management & Analytics OS
 
-## Getting Started
+Next.js App Router application for saloon reception, billing, queue management, compliance records, and owner analytics.
 
-First, run the development server:
+## Requirements
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- Node.js supported by the installed Next.js 16 version
+- A Supabase project with the app's base `saloons`, `services`, `customers`, and `visits` tables
+- A Gemini API key to use the AI advisor
+
+## Environment
+
+Configure these values in `.env.local` for local development and in the deployment platform for production:
+
+```env
+NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=YOUR_SUPABASE_PUBLISHABLE_OR_ANON_KEY
+NEXT_PUBLIC_SALOON_ID=YOUR_SALOON_UUID
+GEMINI_API_KEY=YOUR_SERVER_SIDE_GEMINI_KEY
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The Supabase public/anon key is intended to be visible to the browser. Database security must come from the RLS policies below; never put a Supabase `service_role` key in a `NEXT_PUBLIC_*` variable or in this app's runtime environment.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Database and authentication setup
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Back up the project and apply every SQL migration in `supabase/migrations/` in filename order. The auth/RLS migration expects the base tables and columns used by this app: UUID primary keys, `saloon_id`, `customers.phone`, customer totals, `visits.customer_id`, `visits.services_done` as JSONB, visit payment/status fields, and the service name/price/category fields.
+2. Before applying the auth/RLS migration, resolve any duplicate `(saloon_id, phone)` customer records. The migration deliberately stops rather than guessing which records to merge.
+3. Create staff accounts using Supabase Auth. Provision each initial owner membership through the Supabase SQL editor or a trusted administrative process:
 
-## Learn More
+   ```sql
+   insert into public.saloon_members (user_id, saloon_id, role)
+   values ('AUTH_USER_UUID', 'SALOON_UUID', 'owner');
+   ```
 
-To learn more about Next.js, take a look at the following resources:
+   Add further memberships as `admin` or `staff`. Do not add a membership-management service key to the application.
+4. Set `NEXT_PUBLIC_SALOON_ID` to the same saloon UUID and test with separate owner, staff, and unauthenticated accounts. Staff can use reception/queue features; only owners and admins can use `/admin` and the AI analytics API.
+5. Verify the applied RLS policies and RPC grants in the deployed Supabase project before accepting real customer data. The migration replaces existing policies on the app's five tables with membership-based policies.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+`NEXT_PUBLIC_SALOON_ID` selects the app's configured saloon, but it is not an authorization boundary. Supabase membership checks, RLS, and authorization inside database RPCs enforce access. Never expose a database service-role key to the browser or API route.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Local development and checks
 
-## Deploy on Vercel
+```bash
+npm install
+npm run dev
+npm run lint
+npx tsc --noEmit
+npm run build
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Apply and verify database migrations against a non-production Supabase project before deploying. Database SQL migrations are not validated by the JavaScript build.

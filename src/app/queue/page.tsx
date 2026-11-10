@@ -1,70 +1,78 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { supabase } from '../../lib/supabase';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { fetchAllRows, getSaloonId } from '../../lib/supabase';
+import { supabase } from '../../lib/supabase/client';
 import { Scissors, Clock } from 'lucide-react';
-
-const SALOON_ID = process.env.NEXT_PUBLIC_SALOON_ID || '00000000-0000-0000-0000-000000000001';
 
 interface VisitItem {
   id: string;
-  status: string;
-  stylist_name?: string;
-  services_done: { service_name: string }[];
+  status: 'Waiting' | 'In-Progress' | 'Completed';
+  stylist_name?: string | null;
+  services_done?: { service_name: string }[];
   customers?: { name: string };
 }
 
 export default function QueueDisplayPage() {
   const [queue, setQueue] = useState<VisitItem[]>([]);
+  const [dataError, setDataError] = useState('');
+  const isMountedRef = useRef(false);
+  const fetchRequestRef = useRef(0);
+  const fetchInProgressRef = useRef(false);
 
   const fetchQueue = useCallback(async () => {
-    const { data } = await supabase
-      .from('visits')
-      .select('*, customers(name)')
-      .eq('saloon_id', SALOON_ID)
-      .neq('status', 'Completed')
-      .order('created_at', { ascending: true });
-
-    if (data) setQueue(data as VisitItem[]);
+    if (fetchInProgressRef.current) return;
+    fetchInProgressRef.current = true;
+    const requestId = ++fetchRequestRef.current;
+    try {
+      const saloonId = getSaloonId();
+      const data = await fetchAllRows((from, to) => supabase
+        .from('visits')
+        .select('*, customers(name)')
+        .eq('saloon_id', saloonId)
+        .neq('status', 'Completed')
+        .order('created_at', { ascending: true })
+        .range(from, to));
+      if (isMountedRef.current && requestId === fetchRequestRef.current) {
+        setQueue(data);
+        setDataError('');
+      }
+    } catch (error) {
+      console.error('Failed to load queue:', error);
+      if (isMountedRef.current && requestId === fetchRequestRef.current) {
+        setDataError('Could not load the live queue. Check your connection and membership, then retry.');
+      }
+    } finally {
+      fetchInProgressRef.current = false;
+    }
   }, []);
 
   useEffect(() => {
-    let isMounted = true;
-
-    const loadInitialQueue = async () => {
-      const { data } = await supabase
-        .from('visits')
-        .select('*, customers(name)')
-        .eq('saloon_id', SALOON_ID)
-        .neq('status', 'Completed')
-        .order('created_at', { ascending: true });
-
-      if (isMounted && data) {
-        setQueue(data as VisitItem[]);
-      }
-    };
-
-    loadInitialQueue();
-
+    isMountedRef.current = true;
+    const initialLoad = window.setTimeout(() => {
+      void fetchQueue();
+    }, 0);
     const interval = setInterval(() => {
-      fetchQueue();
+      void fetchQueue();
     }, 5000);
 
     return () => {
-      isMounted = false;
+      isMountedRef.current = false;
+      fetchRequestRef.current += 1;
+      window.clearTimeout(initialLoad);
       clearInterval(interval);
     };
   }, [fetchQueue]);
 
   return (
-    <div className="min-h-screen bg-[#0f0d0e] text-stone-100 p-8 flex flex-col justify-between">
-      <header className="flex justify-between items-center border-b border-amber-900/40 pb-6">
+    <div className="min-h-screen bg-[#0f0d0e] text-stone-100 p-4 sm:p-8 flex flex-col justify-between">
+      <header className="flex flex-col gap-4 border-b border-amber-900/40 pb-6 sm:flex-row sm:justify-between sm:items-center">
         <div className="flex items-center gap-4">
           <div className="p-3 bg-amber-600/20 text-amber-500 rounded-xl border border-amber-600/40">
             <Scissors className="w-8 h-8" />
           </div>
           <div>
-            <h1 className="text-3xl font-black tracking-wider text-stone-100">VINTAGE BARBER LOUNGE</h1>
+            <h1 className="text-2xl sm:text-3xl font-black tracking-wider text-stone-100">VINTAGE BARBER LOUNGE</h1>
             <p className="text-amber-500 text-sm font-semibold tracking-widest uppercase">Live Waiting Queue</p>
           </div>
         </div>
@@ -74,7 +82,11 @@ export default function QueueDisplayPage() {
       </header>
 
       <main className="my-auto py-8">
-        {queue.length === 0 ? (
+        {dataError ? (
+          <div role="alert" className="rounded-lg border border-red-800 bg-red-950/50 p-4 text-center text-red-200">
+            {dataError}
+          </div>
+        ) : queue.length === 0 ? (
           <div className="text-center space-y-4 py-20">
             <h2 className="text-4xl font-bold text-stone-500">No Customers Waiting</h2>
             <p className="text-stone-600 text-lg">Walk-ins Welcome! Please proceed to reception.</p>
@@ -108,7 +120,7 @@ export default function QueueDisplayPage() {
                 <div>
                   <h3 className="text-2xl font-bold text-stone-100">{v.customers?.name || 'Valued Client'}</h3>
                   <p className="text-sm text-stone-400">
-                    Services: {v.services_done?.map(s => s.service_name).join(', ')}
+                    Services: {v.services_done?.map(s => s.service_name).join(', ') || 'No services recorded'}
                   </p>
                 </div>
 
