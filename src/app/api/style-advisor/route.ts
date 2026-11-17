@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 
 const MAX_BODY_BYTES = 450_000;
 const MAX_IMAGE_BASE64_LENGTH = 400_000;
+const GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-3.5-flash'] as const;
 const RATE_LIMIT = 5;
 const GLOBAL_RATE_LIMIT = 60;
 const RATE_WINDOW_MS = 60_000;
@@ -88,6 +89,23 @@ function getErrorDetails(error: unknown): { status: number | 'unknown'; message:
       ? error.message
       : String(error);
   return { status, message };
+}
+
+function isModelNotFoundError(error: unknown): boolean {
+  const details = getErrorDetails(error);
+  return details.status === 404 && /model[\s\S]*not found|not found[\s\S]*model/i.test(details.message);
+}
+
+async function generateWithModelFallback<T>(generate: (model: string) => Promise<T>): Promise<T> {
+  for (const [index, model] of GEMINI_MODELS.entries()) {
+    try {
+      return await generate(model);
+    } catch (error: unknown) {
+      if (index === GEMINI_MODELS.length - 1 || !isModelNotFoundError(error)) throw error;
+      console.warn(`Gemini model ${model} was not found; trying ${GEMINI_MODELS[index + 1]}.`);
+    }
+  }
+  throw new Error('No Gemini models are configured.');
 }
 
 function getJpegDimensions(base64: string): { width: number; height: number } | null {
@@ -297,11 +315,11 @@ Return only valid JSON with this shape:
       ? [{ text: prompt }, { inlineData: { mimeType: 'image/jpeg', data: imageData } }]
       : [{ text: prompt }];
     const ai = new GoogleGenAI({ apiKey });
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+    const response = await generateWithModelFallback(model => ai.models.generateContent({
+      model,
       contents,
       config: { responseMimeType: 'application/json' },
-    });
+    }));
     if (!response.text) {
       return jsonResponse({ error: 'The AI did not return style advice. Please try again.' }, 502);
     }
