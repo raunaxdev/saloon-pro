@@ -7,6 +7,8 @@ export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   const isLoginPage = pathname === '/login';
   const isApiRequest = pathname.startsWith('/api/');
+  if (pathname === '/api/style-advisor') return NextResponse.next({ request });
+
   if (!isLoginPage && !isApiRequest && pathname !== '/admin' && !pathname.startsWith('/admin/')
     && pathname !== '/queue' && !pathname.startsWith('/queue/')) {
     return NextResponse.next();
@@ -32,7 +34,7 @@ export async function proxy(request: NextRequest) {
   });
 
   const { data: { user }, error } = await supabase.auth.getUser();
-  if (error) console.error('Session verification failed:', error);
+  if (error && error.name !== 'AuthSessionMissingError') console.error('Session verification failed:', error);
   if (!user && !isLoginPage) {
     if (request.nextUrl.pathname.startsWith('/api/')) {
       return NextResponse.json({ error: 'Authentication required.' }, { status: 401 });

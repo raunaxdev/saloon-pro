@@ -10,8 +10,18 @@ interface VisitItem {
   id: string;
   status: 'Waiting' | 'In-Progress' | 'Completed';
   stylist_name?: string | null;
-  services_done?: { service_name: string }[];
+  services_done?: unknown;
   customers?: { name: string };
+}
+
+function getServiceNames(value: unknown): string {
+  if (!Array.isArray(value)) return 'No services recorded';
+  const names = value.flatMap(item => {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) return [];
+    const serviceName = (item as Record<string, unknown>).service_name;
+    return typeof serviceName === 'string' && serviceName.trim() ? [serviceName.trim()] : [];
+  });
+  return names.length ? names.join(', ') : 'No services recorded';
 }
 
 export default function QueueDisplayPage() {
@@ -128,7 +138,7 @@ export default function QueueDisplayPage() {
                 <div>
                   <h3 className="text-2xl font-bold text-stone-100">{v.customers?.name || 'Valued Client'}</h3>
                   <p className="text-sm text-stone-400">
-                    Services: {v.services_done?.map(s => s.service_name).join(', ') || 'No services recorded'}
+                    Services: {getServiceNames(v.services_done)}
                   </p>
                 </div>
 

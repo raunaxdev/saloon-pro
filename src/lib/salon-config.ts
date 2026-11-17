@@ -12,3 +12,8 @@ export const SALON_CONFIG = {
   googleMapsDirectionsUrl: 'https://maps.google.com/?q=Bank+More+Dhanbad',
   stylists: ['Mukesh (Head Barber)', 'Ramesh (Hair Stylist)', 'Suresh (Facial Expert)', 'General Staff'],
 } as const;
+
+export function getSalonWhatsAppPhone(): string | null {
+  const phone = SALON_CONFIG.phone.replace(/\D/g, '');
+  return /^91[6-9]\d{9}$/.test(phone) ? phone : null;
+}

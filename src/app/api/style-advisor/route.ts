@@ -1,10 +1,18 @@
 import { GoogleGenAI } from '@google/genai';
 import { NextResponse } from 'next/server';
 
-const MAX_BODY_BYTES = 900_000;
-const MAX_IMAGE_BASE64_LENGTH = 850_000;
+const MAX_BODY_BYTES = 450_000;
+const MAX_IMAGE_BASE64_LENGTH = 400_000;
+const RATE_LIMIT = 5;
+const GLOBAL_RATE_LIMIT = 60;
+const RATE_WINDOW_MS = 60_000;
 const FACE_SHAPES = new Set(['oval', 'round', 'square', 'heart', 'diamond', 'oblong', 'not sure']);
 const HAIR_TYPES = new Set(['straight', 'wavy', 'curly', 'coily', 'fine', 'thick', 'not sure']);
+const JPEG_START_OF_FRAME_MARKERS = new Set([
+  0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf,
+]);
+const requestCounts = new Map<string, { count: number; resetAt: number }>();
+const globalRequestCounts = new Map<string, { count: number; resetAt: number }>();
 
 type ServiceOption = {
   id: string;
@@ -72,6 +80,60 @@ function boundedText(value: unknown, maxLength: number): string | null {
   return value.trim();
 }
 
+function getJpegDimensions(base64: string): { width: number; height: number } | null {
+  const bytes = Buffer.from(base64, 'base64');
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+
+  let offset = 2;
+  while (offset + 3 < bytes.length) {
+    if (bytes[offset] !== 0xff) return null;
+    while (offset < bytes.length && bytes[offset] === 0xff) offset++;
+    if (offset >= bytes.length) return null;
+
+    const marker = bytes[offset++];
+    if (marker === 0xd9 || marker === 0xda) return null;
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (offset + 1 >= bytes.length) return null;
+
+    const segmentLength = (bytes[offset] << 8) | bytes[offset + 1];
+    if (segmentLength < 2 || offset + segmentLength > bytes.length) return null;
+    if (JPEG_START_OF_FRAME_MARKERS.has(marker)) {
+      if (segmentLength < 7) return null;
+      return {
+        height: (bytes[offset + 3] << 8) | bytes[offset + 4],
+        width: (bytes[offset + 5] << 8) | bytes[offset + 6],
+      };
+    }
+    offset += segmentLength;
+  }
+  return null;
+}
+
+function claimRateLimit(
+  key: string,
+  limit: number,
+  buckets: Map<string, { count: number; resetAt: number }>,
+): number {
+  const now = Date.now();
+  for (const [entryKey, entry] of buckets) {
+    if (now >= entry.resetAt) buckets.delete(entryKey);
+  }
+
+  const current = buckets.get(key);
+  if (current && now < current.resetAt) {
+    if (current.count >= limit) return Math.ceil((current.resetAt - now) / 1000);
+    current.count++;
+    return 0;
+  }
+
+  if (buckets.size >= 5000) {
+    const oldestKey = buckets.keys().next().value;
+    if (oldestKey) buckets.delete(oldestKey);
+  }
+  buckets.set(key, { count: 1, resetAt: now + RATE_WINDOW_MS });
+  return 0;
+}
+
 function parseAdvisorResult(value: unknown, services: ServiceOption[]): AdvisorResult | null {
   if (!isRecord(value) || !isRecord(value.faceShape) || !isRecord(value.undertone)
     || !Array.isArray(value.recommendations) || value.recommendations.length !== 2
@@ -112,15 +174,30 @@ function parseAdvisorResult(value: unknown, services: ServiceOption[]): AdvisorR
 
 export async function POST(request: Request) {
   const origin = request.headers.get('origin');
-  const host = request.headers.get('host');
-  if (origin) {
-    try {
-      if (!host || new URL(origin).host !== host) {
-        return jsonResponse({ error: 'Cross-origin requests are not allowed.' }, 403);
-      }
-    } catch {
-      return jsonResponse({ error: 'Invalid request origin.' }, 403);
+  if (!origin) return jsonResponse({ error: 'A same-origin request is required.' }, 403);
+  try {
+    const originUrl = new URL(origin);
+    const host = request.headers.get('host');
+    const forwardedProtocol = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim().replace(/:$/, '');
+    const protocol = forwardedProtocol ? `${forwardedProtocol}:` : new URL(request.url).protocol;
+    if (!host || originUrl.origin !== origin || originUrl.host !== host || originUrl.protocol !== protocol) {
+      return jsonResponse({ error: 'Cross-origin requests are not allowed.' }, 403);
     }
+  } catch {
+    return jsonResponse({ error: 'Invalid request origin.' }, 403);
+  }
+
+  const forwardedIps = request.headers.get('x-forwarded-for')?.split(',').map(value => value.trim()).filter(Boolean);
+  const ip = forwardedIps?.[forwardedIps.length - 1] || 'unknown';
+  const retryAfter = Math.max(
+    claimRateLimit(ip, RATE_LIMIT, requestCounts),
+    claimRateLimit('style-advisor', GLOBAL_RATE_LIMIT, globalRequestCounts),
+  );
+  if (retryAfter) {
+    return NextResponse.json(
+      { error: 'Too many style advice requests. Try again shortly.' },
+      { status: 429, headers: { 'Cache-Control': 'private, no-store', 'Retry-After': String(retryAfter) } },
+    );
   }
   if (request.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
     return jsonResponse({ error: 'Content-Type must be application/json.' }, 415);
@@ -128,7 +205,7 @@ export async function POST(request: Request) {
 
   const parsedBody = await readJsonBody(request);
   if (parsedBody.kind === 'too-large') {
-    return jsonResponse({ error: 'Request body cannot exceed 900 KB.' }, 413);
+    return jsonResponse({ error: 'Request body cannot exceed 450 KB.' }, 413);
   }
   if (parsedBody.kind === 'invalid' || !isRecord(parsedBody.body)) {
     return jsonResponse({ error: 'Request body must contain valid JSON.' }, 400);
@@ -136,6 +213,10 @@ export async function POST(request: Request) {
   const body = parsedBody.body;
 
   const imageData = body.imageData === undefined || body.imageData === '' ? '' : body.imageData;
+  if ((body.faceShape !== undefined && typeof body.faceShape !== 'string')
+    || (body.hairType !== undefined && typeof body.hairType !== 'string')) {
+    return jsonResponse({ error: 'Face shape and hair type must be valid selections.' }, 400);
+  }
   const faceShape = typeof body.faceShape === 'string' ? body.faceShape.trim().toLowerCase() : '';
   const hairType = typeof body.hairType === 'string' ? body.hairType.trim().toLowerCase() : '';
   if (imageData !== '' && (
@@ -144,13 +225,22 @@ export async function POST(request: Request) {
     || imageData.length % 4 !== 0
     || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(imageData)
   )) {
-    return jsonResponse({ error: 'Upload a resized JPEG image smaller than 850 KB.' }, 400);
+    return jsonResponse({ error: 'Upload a resized JPEG image smaller than 400 KB.' }, 400);
   }
-  if (faceShape && !FACE_SHAPES.has(faceShape)) {
+  if (body.faceShape !== undefined && body.faceShape !== '' && !FACE_SHAPES.has(faceShape)) {
     return jsonResponse({ error: 'Choose a valid face shape.' }, 400);
   }
-  if (hairType && !HAIR_TYPES.has(hairType)) {
+  if (body.hairType !== undefined && body.hairType !== '' && !HAIR_TYPES.has(hairType)) {
     return jsonResponse({ error: 'Choose a valid hair type.' }, 400);
+  }
+  if (imageData) {
+    const dimensions = getJpegDimensions(imageData);
+    if (!dimensions || !dimensions.width || !dimensions.height) {
+      return jsonResponse({ error: 'The uploaded image must be a valid JPEG.' }, 400);
+    }
+    if (dimensions.width > 512 || dimensions.height > 512) {
+      return jsonResponse({ error: 'The JPEG must be no larger than 512 × 512 pixels.' }, 400);
+    }
   }
   if (!imageData && !faceShape && !hairType) {
     return jsonResponse({ error: 'Upload a selfie or choose a face shape or hair type.' }, 400);
@@ -161,21 +251,21 @@ export async function POST(request: Request) {
 
   const services: ServiceOption[] = [];
   for (const item of body.services) {
-    if (!isRecord(item) || typeof item.id !== 'string' || !item.id.trim() || item.id.length > 100
+    if (!isRecord(item) || typeof item.id !== 'string' || !item.id.trim() || item.id.trim() !== item.id || item.id.length > 100
       || typeof item.service_name !== 'string' || !item.service_name.trim() || item.service_name.length > 120
       || typeof item.category !== 'string' || item.category.length > 60
-      || !Number.isFinite(Number(item.price)) || Number(item.price) < 0) {
+      || typeof item.price !== 'number' || !Number.isFinite(item.price) || item.price < 0) {
       return jsonResponse({ error: 'The service menu contains invalid entries. Please refresh and try again.' }, 400);
     }
     services.push({
       id: item.id,
       service_name: item.service_name.trim(),
       category: item.category.trim(),
-      price: Number(item.price),
+      price: item.price,
     });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) return jsonResponse({ error: 'The AI style advisor is not configured.' }, 503);
 
   const menu = services.map(service => ({
@@ -218,7 +308,17 @@ Return only valid JSON with this shape:
     }
     return jsonResponse(result);
   } catch (error: unknown) {
-    console.error('AI style advisor request failed:', error);
+    const errorMessage = error instanceof Error ? error.message.toLowerCase() : '';
+    console.error('AI style advisor request failed:', error instanceof Error ? error.name : 'Unknown error');
+    if (/api.?key.*(invalid|not valid)|invalid.*api.?key|unauthorized|permission denied/.test(errorMessage)) {
+      return jsonResponse({ error: 'The AI service credentials are invalid. Please contact the salon.' }, 503);
+    }
+    if (/quota|resource_exhausted|rate.?limit|\b429\b/.test(errorMessage)) {
+      return NextResponse.json(
+        { error: 'The AI usage limit has been reached. Please try again in one minute.' },
+        { status: 429, headers: { 'Cache-Control': 'private, no-store', 'Retry-After': '60' } },
+      );
+    }
     return jsonResponse({ error: 'The AI style advisor failed. Please try again later.' }, 500);
   }
 }

@@ -1,10 +1,10 @@
 'use client';
 
 import { createBrowserClient } from '@supabase/ssr';
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import NextImage from 'next/image';
-import { SALON_CONFIG } from '../lib/salon-config';
+import { getSalonWhatsAppPhone, SALON_CONFIG } from '../lib/salon-config';
 import { getSaloonId, getSupabasePublicConfig } from '../lib/supabase';
 import type { Database } from '../lib/database.types';
 
@@ -46,8 +46,11 @@ const TIME_SLOTS = [
 export default function PublicBookingPage() {
   const [services, setServices] = useState<ServiceItem[]>(FALLBACK_SERVICES);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [serviceNotice, setServiceNotice] = useState('');
+  const [serviceNotice, setServiceNotice] = useState(
+    'Showing a sample menu. Please confirm current prices when you arrive.',
+  );
   const [customerName, setCustomerName] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
   const [bookingDate, setBookingDate] = useState('');
   const [timeSlot, setTimeSlot] = useState('');
   const [bookingError, setBookingError] = useState('');
@@ -58,10 +61,14 @@ export default function PublicBookingPage() {
   const [advisorResult, setAdvisorResult] = useState<StyleAdvisorResult | null>(null);
   const [advisorError, setAdvisorError] = useState('');
   const [advisorLoading, setAdvisorLoading] = useState(false);
+  const [bookingHighlighted, setBookingHighlighted] = useState(false);
+  const bookingFormRef = useRef<HTMLFormElement>(null);
+  const bookingHighlightTimeoutRef = useRef<number | null>(null);
   const total = useMemo(
     () => services.reduce((sum, service) => selectedIds.includes(service.id) ? sum + Number(service.price) : sum, 0),
     [selectedIds, services],
   );
+  const salonWhatsAppPhone = getSalonWhatsAppPhone();
 
   useEffect(() => {
     let active = true;
@@ -86,6 +93,10 @@ export default function PublicBookingPage() {
           } else {
             setServiceNotice('Showing a sample menu. Please confirm current prices when you arrive.');
           }
+        }, (error: unknown) => {
+          if (!active) return;
+          console.warn('Public service menu is unavailable; using the sample menu.', error);
+          setServiceNotice('Showing a sample menu. Please confirm current prices when you arrive.');
         });
     } catch (error) {
       console.warn('Public service menu is unavailable; using the sample menu.', error);
@@ -94,6 +105,12 @@ export default function PublicBookingPage() {
     return () => {
       active = false;
     };
+  }, []);
+
+  useEffect(() => () => {
+    if (bookingHighlightTimeoutRef.current !== null) {
+      window.clearTimeout(bookingHighlightTimeoutRef.current);
+    }
   }, []);
 
   const toggleService = (id: string) => {
@@ -186,21 +203,45 @@ export default function PublicBookingPage() {
     }
     setSelectedIds(current => current.includes(recommendedId) ? current : [...current, recommendedId]);
     setServiceNotice('Recommended service added to your booking.');
+    bookingFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setBookingHighlighted(true);
+    if (bookingHighlightTimeoutRef.current !== null) {
+      window.clearTimeout(bookingHighlightTimeoutRef.current);
+    }
+    bookingHighlightTimeoutRef.current = window.setTimeout(() => {
+      setBookingHighlighted(false);
+      bookingHighlightTimeoutRef.current = null;
+    }, 2200);
   };
 
   const confirmBooking = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const selectedServices = services.filter(service => selectedIds.includes(service.id));
-    if (!selectedServices.length) return;
+    if (!selectedServices.length) {
+      setBookingError('Choose at least one service before requesting an appointment.');
+      return;
+    }
     if (!customerName.trim()) {
       setBookingError('Enter your name to request an appointment.');
+      return;
+    }
+    if (!/^[6-9]\d{9}$/.test(customerPhone)) {
+      setBookingError('Enter a valid 10-digit Indian mobile number for the salon to call you back.');
       return;
     }
     const selectedDate = new Date(`${bookingDate}T00:00:00`);
     const earliestDate = new Date();
     earliestDate.setHours(0, 0, 0, 0);
-    if (selectedDate < earliestDate) {
+    if (!bookingDate || Number.isNaN(selectedDate.getTime()) || selectedDate < earliestDate) {
       setBookingError('Choose today or a future date for your appointment.');
+      return;
+    }
+    if (!TIME_SLOTS.includes(timeSlot)) {
+      setBookingError('Choose a valid appointment time.');
+      return;
+    }
+    if (!salonWhatsAppPhone) {
+      setBookingError('The salon WhatsApp number is not configured correctly. Please contact the salon by phone.');
       return;
     }
     setBookingError('');
@@ -209,6 +250,7 @@ export default function PublicBookingPage() {
       `Hello ${SALON_CONFIG.fullName}, I would like to book an appointment.`,
       '',
       `Name: ${customerName.trim()}`,
+      `Callback phone: +91 ${customerPhone}`,
       `Date: ${bookingDate}`,
       `Time: ${timeSlot}`,
       'Services:',
@@ -217,7 +259,7 @@ export default function PublicBookingPage() {
     ].join('\n');
 
     window.open(
-      `https://wa.me/${SALON_CONFIG.phone}?text=${encodeURIComponent(message)}`,
+      `https://wa.me/${salonWhatsAppPhone}?text=${encodeURIComponent(message)}`,
       '_blank',
       'noopener,noreferrer',
     );
@@ -232,7 +274,7 @@ export default function PublicBookingPage() {
             <span className="text-xs text-stone-400">{SALON_CONFIG.subName}</span>
           </a>
           <div className="flex items-center gap-3 sm:gap-6">
-            <a href="#style-advisor" className="text-xs font-semibold text-stone-300 transition hover:text-amber-400 sm:text-sm">
+            <a href="#style-advisor" className="hidden text-xs font-semibold text-stone-300 transition hover:text-amber-400 sm:inline-flex sm:text-sm">
               AI Style Advisor
             </a>
             <a href="#booking" className="rounded-full bg-amber-500 px-4 py-2 text-xs font-bold text-stone-950 transition hover:bg-amber-400 sm:text-sm">
@@ -261,6 +303,9 @@ export default function PublicBookingPage() {
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <a href="#booking" className="rounded-lg bg-amber-500 px-6 py-3.5 text-center text-sm font-bold text-stone-950 transition hover:bg-amber-400">
                 Book on WhatsApp Instantly
+              </a>
+              <a href="#style-advisor" className="rounded-lg border border-amber-700/60 px-6 py-3.5 text-center text-sm font-semibold text-amber-300 transition hover:border-amber-500 hover:text-amber-200">
+                Get AI Style Advice
               </a>
               <a href={SALON_CONFIG.googleMapsDirectionsUrl} target="_blank" rel="noreferrer" className="rounded-lg border border-stone-700 px-6 py-3.5 text-center text-sm font-semibold text-stone-200 transition hover:border-amber-600 hover:text-amber-300">
                 Get Google Maps Directions
@@ -405,7 +450,12 @@ export default function PublicBookingPage() {
           })}
         </div>
 
-        <form id="booking" onSubmit={confirmBooking} className="mt-10 scroll-mt-24 rounded-2xl border border-amber-900/40 bg-[#181517] p-5 sm:p-8">
+        <form
+          id="booking"
+          ref={bookingFormRef}
+          onSubmit={confirmBooking}
+          className={`mt-10 scroll-mt-24 rounded-2xl border border-amber-900/40 bg-[#181517] p-5 transition-shadow sm:p-8 ${bookingHighlighted ? 'ring-2 ring-amber-400 shadow-lg shadow-amber-500/10' : ''}`}
+        >
           <div className="flex flex-col justify-between gap-3 border-b border-stone-800 pb-5 sm:flex-row sm:items-center">
             <div>
               <h3 className="text-xl font-bold">Request your appointment</h3>
@@ -413,10 +463,28 @@ export default function PublicBookingPage() {
             </div>
             <div className="text-lg font-black text-amber-400">Estimated total: ₹{total.toLocaleString('en-IN')}</div>
           </div>
-          <div className="grid gap-4 py-5 sm:grid-cols-3">
+          <div className="grid gap-4 py-5 sm:grid-cols-2 lg:grid-cols-4">
             <label className="text-xs font-semibold text-stone-300">
               Your name
-              <input required maxLength={120} value={customerName} onChange={event => setCustomerName(event.target.value)} className="mt-2 w-full rounded-lg border border-stone-700 bg-[#0f0d0e] px-3 py-3 text-sm text-stone-100 outline-none focus:border-amber-500" placeholder="Enter your name" />
+              <input required maxLength={120} value={customerName} onChange={event => { setCustomerName(event.target.value); setBookingError(''); }} className="mt-2 w-full rounded-lg border border-stone-700 bg-[#0f0d0e] px-3 py-3 text-sm text-stone-100 outline-none focus:border-amber-500" placeholder="Enter your name" />
+            </label>
+            <label className="text-xs font-semibold text-stone-300">
+              Customer phone
+              <input
+                required
+                type="tel"
+                inputMode="numeric"
+                autoComplete="tel-national"
+                pattern="[6-9][0-9]{9}"
+                maxLength={10}
+                value={customerPhone}
+                onChange={event => {
+                  setCustomerPhone(event.target.value.replace(/\D/g, '').slice(0, 10));
+                  setBookingError('');
+                }}
+                className="mt-2 w-full rounded-lg border border-stone-700 bg-[#0f0d0e] px-3 py-3 text-sm text-stone-100 outline-none focus:border-amber-500"
+                placeholder="10-digit mobile number"
+              />
             </label>
             <label className="text-xs font-semibold text-stone-300">
               Preferred date
@@ -424,7 +492,7 @@ export default function PublicBookingPage() {
             </label>
             <label className="text-xs font-semibold text-stone-300">
               Time slot
-              <select required value={timeSlot} onChange={event => setTimeSlot(event.target.value)} className="mt-2 w-full rounded-lg border border-stone-700 bg-[#0f0d0e] px-3 py-3 text-sm text-stone-100 outline-none focus:border-amber-500">
+              <select required value={timeSlot} onChange={event => { setTimeSlot(event.target.value); setBookingError(''); }} className="mt-2 w-full rounded-lg border border-stone-700 bg-[#0f0d0e] px-3 py-3 text-sm text-stone-100 outline-none focus:border-amber-500">
                 <option value="" disabled>Select a time</option>
                 {TIME_SLOTS.map(slot => <option key={slot} value={slot}>{slot}</option>)}
               </select>
@@ -445,7 +513,7 @@ export default function PublicBookingPage() {
             <address className="mt-5 not-italic leading-7 text-stone-300">{SALON_CONFIG.address}</address>
             <p className="mt-3 text-sm text-stone-400">{SALON_CONFIG.timings}</p>
             <div className="mt-6 flex flex-wrap gap-4 text-sm font-semibold">
-              <a href={`tel:+${SALON_CONFIG.phone}`} className="text-amber-400 hover:text-amber-300">{SALON_CONFIG.displayPhone}</a>
+              {salonWhatsAppPhone && <a href={`tel:+${salonWhatsAppPhone}`} className="text-amber-400 hover:text-amber-300">{SALON_CONFIG.displayPhone}</a>}
               <a href={SALON_CONFIG.googleMapsDirectionsUrl} target="_blank" rel="noreferrer" className="text-stone-300 hover:text-amber-300">Open directions ↗</a>
             </div>
           </div>

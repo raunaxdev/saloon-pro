@@ -32,7 +32,7 @@ interface VisitItem {
   id: string;
   saloon_id: string;
   customer_id: string;
-  services_done: ServiceItem[];
+  services_done: ServiceItem[] | null;
   total_amount: number;
   payment_mode: 'Cash' | 'UPI' | 'Card';
   status: 'Waiting' | 'In-Progress' | 'Completed';
@@ -43,6 +43,44 @@ interface VisitItem {
   customers?: CustomerItem;
 }
 
+function isServiceItem(value: unknown): value is ServiceItem {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const service = value as Record<string, unknown>;
+  return typeof service.id === 'string'
+    && typeof service.service_name === 'string'
+    && typeof service.category === 'string'
+    && typeof service.price === 'number'
+    && Number.isFinite(service.price);
+}
+
+function getServiceItems(value: unknown): ServiceItem[] {
+  return Array.isArray(value) ? value.filter(isServiceItem) : [];
+}
+
+function getServiceNames(value: unknown): string {
+  const names = getServiceItems(value).map(service => service.service_name);
+  return names.length ? names.join(', ') : 'No services recorded';
+}
+
+function isCustomerItem(value: unknown): value is CustomerItem {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const customer = value as Record<string, unknown>;
+  return typeof customer.id === 'string'
+    && typeof customer.name === 'string'
+    && typeof customer.phone === 'string'
+    && typeof customer.total_visits === 'number'
+    && typeof customer.total_spent === 'number'
+    && (customer.last_visit === null || typeof customer.last_visit === 'string');
+}
+
+function normalizeVisit(visit: VisitItem): VisitItem {
+  return {
+    ...visit,
+    services_done: getServiceItems(visit.services_done),
+    customers: isCustomerItem(visit.customers) ? visit.customers : undefined,
+  };
+}
+
 export default function SaloonApp() {
   const [activeTab, setActiveTab] = useState<'billing' | 'queue' | 'analytics' | 'audit' | 'ai'>('billing');
 
@@ -51,7 +89,10 @@ export default function SaloonApp() {
   const [customers, setCustomers] = useState<CustomerItem[]>([]);
   const [visits, setVisits] = useState<VisitItem[]>([]);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState('');
+  const [receiptError, setReceiptError] = useState('');
   const [savingVisit, setSavingVisit] = useState(false);
+  const [updatingVisitId, setUpdatingVisitId] = useState<string | null>(null);
   const isMountedRef = useRef(false);
   const loadRequestRef = useRef(0);
   const loadAbortControllerRef = useRef<AbortController | null>(null);
@@ -67,7 +108,7 @@ export default function SaloonApp() {
   const [queueNotice, setQueueNotice] = useState('');
 
   // Sanitation Checklist
-  const [sterilizedEquipment, setSterilizedEquipment] = useState(true);
+  const [sterilizedEquipment, setSterilizedEquipment] = useState(false);
 
   // Thermal Slip Modal State
   const [activeReceipt, setActiveReceipt] = useState<{
@@ -116,7 +157,7 @@ export default function SaloonApp() {
       if (isMountedRef.current && requestId === loadRequestRef.current) {
         setServices(servicesData as ServiceItem[]);
         setCustomers(customersData as CustomerItem[]);
-        setVisits(visitsData as VisitItem[]);
+        setVisits((visitsData as VisitItem[]).map(normalizeVisit));
         setApiError(null);
       }
     } catch (error) {
@@ -147,6 +188,7 @@ export default function SaloonApp() {
   const handlePhoneChange = (val: string) => {
     const sanitized = val.replace(/\D/g, '').slice(0, 10);
     setPhone(sanitized);
+    setActionError('');
     const found = sanitized ? customers.find(c => c.phone === sanitized) : undefined;
     if (found) {
       setExistingClient(found);
@@ -161,8 +203,13 @@ export default function SaloonApp() {
     if (selectedServices.find(s => s.id === service.id)) {
       setSelectedServices(selectedServices.filter(s => s.id !== service.id));
     } else {
+      if (selectedServices.length >= 20) {
+        setActionError('A visit can include at most 20 services.');
+        return;
+      }
       setSelectedServices([...selectedServices, service]);
     }
+    setActionError('');
   };
 
   const totalBill = selectedServices.reduce((sum, item) => sum + Number(item.price || 0), 0);
@@ -178,20 +225,26 @@ export default function SaloonApp() {
     const serviceNames = items.map(i => i.service_name).join(', ');
     const text = `Hello *${name}*! Thank you for visiting *${SALON_CONFIG.fullName}*!\n\n*Services Done:* ${serviceNames}\n*Total Amount Paid:* ₹${amount}\n*Payment Mode:* ${mode}\n*UV Equipment Sterilized:* ${sanitationVerified ? 'Verified' : 'Not verified'}\n\nWe look forward to seeing you again soon! Have a great day!`;
     const cleanPhone = clientPhone.replace(/\D/g, '');
+    setReceiptError('');
     if (!/^[6-9]\d{9}$/.test(cleanPhone)) {
-      alert('A valid 10-digit Indian mobile number is required to send a WhatsApp invoice.');
+      setReceiptError('A valid 10-digit Indian mobile number is required to send a WhatsApp invoice.');
       return;
     }
     window.open(`https://wa.me/91${cleanPhone}?text=${encodeURIComponent(text)}`, '_blank', 'noopener,noreferrer');
   };
 
-const handleCreateVisit = async (status: 'Completed' | 'Waiting') => {
+  const handleCreateVisit = async (status: 'Completed' | 'Waiting') => {
+    setActionError('');
     if (!/^[6-9]\d{9}$/.test(phone) || !clientName.trim() || selectedServices.length === 0) {
-      alert('Kripya valid 10-digit Phone Number, Client Name, aur kam se kam 1 service select karein!');
+      setActionError('Enter a valid 10-digit mobile number and client name, then select at least one service.');
+      return;
+    }
+    if (selectedServices.length > 20) {
+      setActionError('A visit can include at most 20 services.');
       return;
     }
     if (!sterilizedEquipment) {
-      alert('UV equipment sterilization must be verified before saving the visit.');
+      setActionError('Verify UV equipment sterilization before saving the visit.');
       return;
     }
     if (savingVisit) return;
@@ -219,7 +272,17 @@ const handleCreateVisit = async (status: 'Completed' | 'Waiting') => {
       const created = rpcData?.[0];
       if (!created) throw new Error('The visit was not created.');
       if (Array.isArray(created.services_done)) {
-        createdServices = created.services_done as unknown as ServiceItem[];
+        const serviceSnapshot: ServiceItem[] = [];
+        for (const service of created.services_done) {
+          if (!isServiceItem(service)) {
+            serviceSnapshot.length = 0;
+            break;
+          }
+          serviceSnapshot.push(service);
+        }
+        if (serviceSnapshot.length && serviceSnapshot.length === created.services_done.length) {
+          createdServices = serviceSnapshot;
+        }
       }
       visitTotal = created.total_amount;
       visitCreatedAt = created.created_at;
@@ -227,6 +290,7 @@ const handleCreateVisit = async (status: 'Completed' | 'Waiting') => {
       if (!isMountedRef.current) return;
 
       if (status === 'Completed') {
+        setReceiptError('');
         setActiveReceipt({
           name: clientName.trim(),
           phone,
@@ -246,17 +310,21 @@ const handleCreateVisit = async (status: 'Completed' | 'Waiting') => {
       setClientName('');
       setSelectedServices([]);
       setExistingClient(null);
-      setSterilizedEquipment(true);
+      setSterilizedEquipment(false);
+      setActionError('');
       await loadData();
     } catch (error) {
       console.error('Failed to create visit:', error);
-      alert('Could not save this visit. Check your connection and access, then retry.');
+      setActionError('Could not save this visit. Check your connection and access, then retry.');
     } finally {
       if (isMountedRef.current) setSavingVisit(false);
     }
   };
 
   const updateQueueStatus = async (visitId: string, newStatus: VisitStatus) => {
+    if (updatingVisitId) return;
+    setUpdatingVisitId(visitId);
+    setActionError('');
     try {
       const visit = visits.find(item => item.id === visitId);
       if (!visit) throw new Error('The selected visit is no longer available.');
@@ -290,10 +358,11 @@ const handleCreateVisit = async (status: 'Completed' | 'Waiting') => {
         }
       }
       if (newStatus === 'Completed') {
+        setReceiptError('');
         setActiveReceipt({
           name: visit.customers?.name || 'Valued Client',
           phone: visit.customers?.phone || '',
-          services: visit.services_done || [],
+          services: getServiceItems(visit.services_done),
           amount: Number(visit.total_amount || 0),
           paymentMode: visit.payment_mode,
           stylist: visit.stylist_name || SALON_CONFIG.stylists[SALON_CONFIG.stylists.length - 1],
@@ -304,7 +373,9 @@ const handleCreateVisit = async (status: 'Completed' | 'Waiting') => {
       await loadData();
     } catch (error) {
       console.error('Failed to update visit status:', error);
-      alert('Could not update the queue. Please retry.');
+      setActionError('Could not update the queue. Please retry.');
+    } finally {
+      setUpdatingVisitId(null);
     }
   };
 
@@ -441,6 +512,12 @@ const handleCreateVisit = async (status: 'Completed' | 'Waiting') => {
       </aside>
 
       <main className="flex-1 p-6 md:p-8 overflow-y-auto">
+        {actionError && (
+          <div role="alert" className="mb-6 flex items-center justify-between rounded-xl border border-red-800/60 bg-red-950/40 p-4 text-sm text-red-200">
+            <span>{actionError}</span>
+            <button type="button" onClick={() => setActionError('')} aria-label="Dismiss error" className="ml-3 text-red-300 hover:text-white">×</button>
+          </div>
+        )}
         {queueNotice && (
           <div role="status" className="mb-6 flex items-center justify-between rounded-xl border border-emerald-800/60 bg-emerald-950/40 p-4 text-sm text-emerald-200 print:hidden">
             <span>{queueNotice}</span>
@@ -501,7 +578,7 @@ const handleCreateVisit = async (status: 'Completed' | 'Waiting') => {
                         placeholder="Client Name"
                         value={clientName}
                         maxLength={120}
-                        onChange={(e) => setClientName(e.target.value)}
+                        onChange={(e) => { setClientName(e.target.value); setActionError(''); }}
                         className="w-full bg-[#0f0d0e] border border-stone-800 rounded-lg px-3.5 py-2.5 text-stone-100 focus:outline-none focus:border-amber-600 transition"
                       />
                     </div>
@@ -526,7 +603,7 @@ const handleCreateVisit = async (status: 'Completed' | 'Waiting') => {
                         <input
                           type="checkbox"
                           checked={sterilizedEquipment}
-                          onChange={(e) => setSterilizedEquipment(e.target.checked)}
+                          onChange={(e) => { setSterilizedEquipment(e.target.checked); setActionError(''); }}
                           className="accent-amber-500 rounded"
                         />
                         <ShieldCheck className="w-4 h-4 text-emerald-400" /> UV Equipment Sterilization Verified (required)
@@ -637,7 +714,7 @@ const handleCreateVisit = async (status: 'Completed' | 'Waiting') => {
           <div className="receipt-overlay fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50 print:bg-transparent print:p-0">
             <div className="print-receipt-modal bg-white text-stone-900 p-6 rounded-xl max-w-sm w-full space-y-4 font-mono shadow-2xl relative">
               <button
-                onClick={() => setActiveReceipt(null)}
+                onClick={() => { setActiveReceipt(null); setReceiptError(''); }}
                 className="absolute top-3 right-3 text-stone-500 hover:text-stone-900 print:hidden"
               >
                 <X className="w-5 h-5" />
@@ -675,6 +752,7 @@ const handleCreateVisit = async (status: 'Completed' | 'Waiting') => {
                 <p>Thank you for visiting! Have a great day!</p>
               </div>
 
+              {receiptError && <p role="alert" className="text-xs text-red-700 print:hidden">{receiptError}</p>}
               <div className="grid grid-cols-2 gap-2 pt-2 print:hidden">
                 <button
                   onClick={() => window.print()}
@@ -718,14 +796,14 @@ const handleCreateVisit = async (status: 'Completed' | 'Waiting') => {
                 </div>
               ) : (
                 visits.filter(v => v.status !== 'Completed').map(v => (
-                  <div key={v.id} className="saloon-card p-4 rounded-xl flex items-center justify-between border-l-4 border-l-amber-500">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-3">
-                        <span className="font-bold text-stone-100">{v.customers?.name || 'Client'}</span>
-                        <span className="text-xs text-stone-400">({v.customers?.phone})</span>
+                  <div key={v.id} className="saloon-card p-4 rounded-xl flex flex-col gap-3 border-l-4 border-l-amber-500 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                        <span className="min-w-0 break-words font-bold text-stone-100">{v.customers?.name || 'Client'}</span>
+                        <span className="text-xs text-stone-400">({v.customers?.phone || 'N/A'})</span>
                       </div>
-                      <div className="text-xs text-stone-400">
-                        Services: {v.services_done?.map(s => s.service_name).join(', ') || 'No services recorded'}
+                      <div className="break-words text-xs text-stone-400">
+                        Services: {getServiceNames(v.services_done)}
                       </div>
                       <div className="text-xs text-amber-500/80 flex items-center gap-1">
                         <UserCheck className="w-3 h-3" /> Stylist: {v.stylist_name || SALON_CONFIG.stylists[SALON_CONFIG.stylists.length - 1]}
@@ -739,6 +817,7 @@ const handleCreateVisit = async (status: 'Completed' | 'Waiting') => {
                       {v.status === 'Waiting' && (
                         <button
                           onClick={() => updateQueueStatus(v.id, 'In-Progress')}
+                          disabled={updatingVisitId !== null}
                           className="bg-amber-600 text-stone-950 font-bold px-3 py-1.5 rounded text-xs hover:bg-amber-500 transition"
                         >
                           Start Service
@@ -747,6 +826,7 @@ const handleCreateVisit = async (status: 'Completed' | 'Waiting') => {
                       {v.status === 'In-Progress' && (
                         <button
                           onClick={() => updateQueueStatus(v.id, 'Completed')}
+                          disabled={updatingVisitId !== null}
                           className="bg-emerald-600 text-white font-bold px-3 py-1.5 rounded text-xs hover:bg-emerald-500 transition"
                         >
                           Finish & Complete
@@ -891,7 +971,7 @@ const handleCreateVisit = async (status: 'Completed' | 'Waiting') => {
                         <td className="p-3 text-stone-400">{new Date(v.created_at).toLocaleString()}</td>
                         <td className="p-3 font-medium text-stone-200">{v.customers?.name || 'Walk-in Client'}</td>
                         <td className="p-3 text-stone-400">{v.customers?.phone || 'N/A'}</td>
-                        <td className="p-3 text-stone-300">{v.services_done?.map(s => s.service_name).join(', ') || 'No services recorded'}</td>
+                        <td className="p-3 text-stone-300">{getServiceNames(v.services_done)}</td>
                         <td className="p-3 text-amber-500/90 font-medium">{v.stylist_name || SALON_CONFIG.stylists[SALON_CONFIG.stylists.length - 1]}</td>
                         <td className="p-3">
                           {v.sanitation_verified ? (
