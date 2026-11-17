@@ -3,6 +3,7 @@
 import { createBrowserClient } from '@supabase/ssr';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import Link from 'next/link';
+import NextImage from 'next/image';
 import { SALON_CONFIG } from '../lib/salon-config';
 import { getSaloonId, getSupabasePublicConfig } from '../lib/supabase';
 import type { Database } from '../lib/database.types';
@@ -13,6 +14,20 @@ interface ServiceItem {
   price: number;
   category: string;
 }
+
+type StyleAdvisorResult = {
+  faceShape: { value: string; explanation: string };
+  undertone: { value: string; explanation: string };
+  recommendations: {
+    haircut: { name: string; why: string };
+    beardOrSkin: { name: string; why: string };
+    barberInstructions: string;
+  }[];
+  serviceRecommendation: { serviceId: string; reason: string };
+};
+
+const FACE_SHAPES = ['Oval', 'Round', 'Square', 'Heart', 'Diamond', 'Oblong', 'Not sure'];
+const HAIR_TYPES = ['Straight', 'Wavy', 'Curly', 'Coily', 'Fine', 'Thick', 'Not sure'];
 
 const FALLBACK_SERVICES: ServiceItem[] = [
   { id: 'fallback-haircut', service_name: 'Classic Haircut', price: 250, category: 'Hair' },
@@ -36,6 +51,13 @@ export default function PublicBookingPage() {
   const [bookingDate, setBookingDate] = useState('');
   const [timeSlot, setTimeSlot] = useState('');
   const [bookingError, setBookingError] = useState('');
+  const [selfie, setSelfie] = useState('');
+  const [selfieProcessing, setSelfieProcessing] = useState(false);
+  const [faceShape, setFaceShape] = useState('');
+  const [hairType, setHairType] = useState('');
+  const [advisorResult, setAdvisorResult] = useState<StyleAdvisorResult | null>(null);
+  const [advisorError, setAdvisorError] = useState('');
+  const [advisorLoading, setAdvisorLoading] = useState(false);
   const total = useMemo(
     () => services.reduce((sum, service) => selectedIds.includes(service.id) ? sum + Number(service.price) : sum, 0),
     [selectedIds, services],
@@ -78,6 +100,92 @@ export default function PublicBookingPage() {
     setSelectedIds(current => current.includes(id)
       ? current.filter(selectedId => selectedId !== id)
       : [...current, id]);
+  };
+
+  const resizeSelfie = async (file: File) => {
+    setSelfie('');
+    setAdvisorResult(null);
+    setAdvisorError('');
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setAdvisorError('Choose a JPEG, PNG, or WebP image.');
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setAdvisorError('Choose an image smaller than 10 MB.');
+      return;
+    }
+
+    setSelfieProcessing(true);
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const image = new window.Image();
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error('The image could not be opened.'));
+        image.src = objectUrl;
+      });
+      if (!image.naturalWidth || !image.naturalHeight || image.naturalWidth * image.naturalHeight > 20_000_000) {
+        throw new Error('Choose a valid image with no more than 20 megapixels.');
+      }
+
+      const scale = Math.min(1, 512 / Math.max(image.naturalWidth, image.naturalHeight));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('Image resizing is not supported in this browser.');
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      setSelfie(canvas.toDataURL('image/jpeg', 0.75));
+      setAdvisorError('');
+      setAdvisorResult(null);
+    } catch (error) {
+      setAdvisorError(error instanceof Error ? error.message : 'The image could not be processed.');
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+      setSelfieProcessing(false);
+    }
+  };
+
+  const requestStyleAdvice = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selfie && !faceShape && !hairType) {
+      setAdvisorError('Upload a selfie or choose your face shape or hair type first.');
+      return;
+    }
+    setAdvisorLoading(true);
+    setAdvisorError('');
+    setAdvisorResult(null);
+    try {
+      const response = await fetch('/api/style-advisor', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageData: selfie ? selfie.split(',')[1] : '',
+          faceShape,
+          hairType,
+          services,
+        }),
+      });
+      const payload = await response.json() as StyleAdvisorResult | { error?: string };
+      if (!response.ok) {
+        throw new Error('error' in payload && payload.error ? payload.error : 'Style advice could not be generated.');
+      }
+      setAdvisorResult(payload as StyleAdvisorResult);
+    } catch (error) {
+      setAdvisorError(error instanceof Error ? error.message : 'Style advice could not be generated.');
+    } finally {
+      setAdvisorLoading(false);
+    }
+  };
+
+  const addRecommendedService = () => {
+    const recommendedId = advisorResult?.serviceRecommendation.serviceId;
+    if (!recommendedId || !services.some(service => service.id === recommendedId)) {
+      setAdvisorError('That recommendation is no longer on the current service menu. Please try again.');
+      return;
+    }
+    setSelectedIds(current => current.includes(recommendedId) ? current : [...current, recommendedId]);
+    setServiceNotice('Recommended service added to your booking.');
   };
 
   const confirmBooking = (event: FormEvent<HTMLFormElement>) => {
@@ -124,6 +232,9 @@ export default function PublicBookingPage() {
             <span className="text-xs text-stone-400">{SALON_CONFIG.subName}</span>
           </a>
           <div className="flex items-center gap-3 sm:gap-6">
+            <a href="#style-advisor" className="text-xs font-semibold text-stone-300 transition hover:text-amber-400 sm:text-sm">
+              AI Style Advisor
+            </a>
             <a href="#booking" className="rounded-full bg-amber-500 px-4 py-2 text-xs font-bold text-stone-950 transition hover:bg-amber-400 sm:text-sm">
               Book Slot
             </a>
@@ -176,6 +287,93 @@ export default function PublicBookingPage() {
               Explore our services <span aria-hidden="true">→</span>
             </a>
           </div>
+        </div>
+      </section>
+
+      <section id="style-advisor" className="mx-auto max-w-7xl scroll-mt-24 px-5 py-16 sm:py-20">
+        <div className="mx-auto max-w-3xl rounded-2xl border border-amber-900/40 bg-[#181517] p-5 sm:p-8">
+          <p className="text-xs font-bold uppercase tracking-[0.25em] text-amber-500">AI Face-Shape &amp; Style Advisor</p>
+          <h2 className="mt-3 text-3xl font-black sm:text-4xl">Find a style that fits you</h2>
+          <p className="mt-3 text-sm leading-6 text-stone-400">
+            Upload a selfie for a visual suggestion, or choose details yourself. Your image is resized in your browser and sent to Gemini for this request; this app does not store it.
+          </p>
+          <form onSubmit={requestStyleAdvice} className="mt-6 space-y-5">
+            <label className="block text-xs font-semibold text-stone-300">
+              Selfie (optional)
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                onChange={event => {
+                  const file = event.target.files?.[0];
+                  if (file) void resizeSelfie(file);
+                  else setSelfie('');
+                }}
+                className="mt-2 block w-full rounded-lg border border-stone-700 bg-[#0f0d0e] px-3 py-3 text-sm text-stone-300 file:mr-3 file:rounded-md file:border-0 file:bg-amber-500 file:px-3 file:py-2 file:text-xs file:font-bold file:text-stone-950"
+              />
+              {selfie && <NextImage src={selfie} alt="Resized selfie preview" width={128} height={128} unoptimized className="mt-3 h-32 w-32 rounded-lg object-cover" />}
+            </label>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="text-xs font-semibold text-stone-300">
+                Face shape
+                <select value={faceShape} onChange={event => { setFaceShape(event.target.value); setAdvisorResult(null); }} className="mt-2 w-full rounded-lg border border-stone-700 bg-[#0f0d0e] px-3 py-3 text-sm text-stone-100 outline-none focus:border-amber-500">
+                  <option value="">Choose if you know it</option>
+                  {FACE_SHAPES.map(shape => <option key={shape} value={shape}>{shape}</option>)}
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-stone-300">
+                Hair type
+                <select value={hairType} onChange={event => { setHairType(event.target.value); setAdvisorResult(null); }} className="mt-2 w-full rounded-lg border border-stone-700 bg-[#0f0d0e] px-3 py-3 text-sm text-stone-100 outline-none focus:border-amber-500">
+                  <option value="">Choose if you know it</option>
+                  {HAIR_TYPES.map(type => <option key={type} value={type}>{type}</option>)}
+                </select>
+              </label>
+            </div>
+            {advisorError && <p role="alert" className="text-sm text-red-300">{advisorError}</p>}
+            <button type="submit" disabled={advisorLoading || selfieProcessing} className="rounded-lg bg-amber-500 px-5 py-3 text-sm font-black text-stone-950 transition hover:bg-amber-400 disabled:cursor-wait disabled:opacity-50">
+              {advisorLoading ? 'Finding your style…' : selfieProcessing ? 'Resizing your selfie…' : 'Get my style advice'}
+            </button>
+          </form>
+
+          {advisorResult && (
+            <div className="mt-8 border-t border-stone-800 pt-6">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="rounded-lg border border-stone-800 bg-[#0f0d0e] p-4">
+                  <h3 className="font-bold text-amber-300">Face shape</h3>
+                  <p className="mt-1 text-sm font-semibold">{advisorResult.faceShape.value}</p>
+                  <p className="mt-1 text-xs leading-5 text-stone-400">{advisorResult.faceShape.explanation}</p>
+                </div>
+                <div className="rounded-lg border border-stone-800 bg-[#0f0d0e] p-4">
+                  <h3 className="font-bold text-amber-300">Skin undertone</h3>
+                  <p className="mt-1 text-sm font-semibold">{advisorResult.undertone.value}</p>
+                  <p className="mt-1 text-xs leading-5 text-stone-400">{advisorResult.undertone.explanation}</p>
+                </div>
+              </div>
+              <div className="mt-5 space-y-4">
+                {advisorResult.recommendations.map((recommendation, index) => (
+                  <article key={`${recommendation.haircut.name}-${index}`} className="rounded-lg border border-stone-800 bg-[#0f0d0e] p-4">
+                    <h3 className="font-bold text-stone-100">Style {index + 1}: {recommendation.haircut.name}</h3>
+                    <p className="mt-1 text-sm leading-6 text-stone-400">{recommendation.haircut.why}</p>
+                    <h4 className="mt-3 text-sm font-bold text-amber-300">{recommendation.beardOrSkin.name}</h4>
+                    <p className="mt-1 text-sm leading-6 text-stone-400">{recommendation.beardOrSkin.why}</p>
+                    <p className="mt-3 text-xs leading-5 text-stone-300"><span className="font-bold">Tell your barber:</span> {recommendation.barberInstructions}</p>
+                  </article>
+                ))}
+              </div>
+              {(() => {
+                const matchedService = services.find(service => service.id === advisorResult.serviceRecommendation.serviceId);
+                return matchedService ? (
+                  <div className="mt-5 rounded-lg border border-amber-800/50 bg-amber-950/20 p-4">
+                    <h3 className="font-bold text-amber-300">Recommended salon service</h3>
+                    <p className="mt-1 text-sm text-stone-100">{matchedService.service_name} · ₹{Number(matchedService.price).toLocaleString('en-IN')}</p>
+                    <p className="mt-1 text-xs leading-5 text-stone-400">{advisorResult.serviceRecommendation.reason}</p>
+                    <button type="button" onClick={addRecommendedService} className="mt-4 rounded-lg bg-amber-500 px-4 py-2.5 text-xs font-black text-stone-950 transition hover:bg-amber-400">
+                      Add Recommended Service to Booking
+                    </button>
+                  </div>
+                ) : <p role="alert" className="mt-5 text-sm text-red-300">The suggested service is no longer available. Please generate a new recommendation.</p>;
+              })()}
+            </div>
+          )}
         </div>
       </section>
 
