@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { SALON_CONFIG } from "../lib/salon-config";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -13,8 +14,21 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Saloon Management & Analytics",
-  description: "Saloon reception, billing, queue, and business analytics.",
+  title: `${SALON_CONFIG.fullName} | Grooming, Hair & Skin Studio in ${SALON_CONFIG.city}`,
+  description: `${SALON_CONFIG.tagline}. Book grooming, hair, and skin services at ${SALON_CONFIG.address}.`,
+  keywords: [
+    `Best Salon in ${SALON_CONFIG.city}`,
+    `barber in ${SALON_CONFIG.city}`,
+    `hair salon ${SALON_CONFIG.city}`,
+    `facial and grooming ${SALON_CONFIG.city}`,
+    SALON_CONFIG.fullName,
+  ],
+  openGraph: {
+    title: SALON_CONFIG.fullName,
+    description: `${SALON_CONFIG.tagline} · Book your appointment on WhatsApp.`,
+    type: "website",
+    locale: "en_IN",
+  },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

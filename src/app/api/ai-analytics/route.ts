@@ -2,6 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import { NextResponse } from 'next/server';
 import { fetchAllRows, getSaloonId } from '../../../lib/supabase';
 import { createSupabaseServerClient } from '../../../lib/supabase/server';
+import { SALON_CONFIG } from '../../../lib/salon-config';
 
 const MAX_BODY_BYTES = 4096;
 const MAX_QUERY_LENGTH = 1000;
@@ -139,7 +140,7 @@ export async function POST(request: Request) {
       return totals;
     }, {});
     const revenueByStylist = completedVisits.reduce<Record<string, number>>((totals, visit) => {
-      const stylistName = visit.stylist_name || 'General Staff';
+      const stylistName = visit.stylist_name || SALON_CONFIG.stylists[SALON_CONFIG.stylists.length - 1];
       totals[stylistName] = (totals[stylistName] ?? 0) + Number(visit.total_amount || 0);
       return totals;
     }, {});
@@ -194,9 +195,8 @@ export async function POST(request: Request) {
     );
   } catch (error: unknown) {
     console.error('AI analytics request failed:', error);
-    const errorMessage = error instanceof Error ? error.message : 'The AI analytics request failed. Please try again later.';
     return NextResponse.json(
-      { error: errorMessage },
+      { error: 'The AI analytics request failed. Please try again later.' },
       { status: 500, headers: { 'Cache-Control': 'no-store' } },
     );
   }

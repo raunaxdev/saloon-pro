@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { fetchAllRows, getSaloonId } from '../../lib/supabase';
 import { supabase } from '../../lib/supabase/client';
+import { SALON_CONFIG } from '../../lib/salon-config';
 import { Scissors, Clock } from 'lucide-react';
 
 interface VisitItem {
@@ -79,7 +80,7 @@ export default function QueueDisplayPage() {
             <Scissors className="w-8 h-8" />
           </div>
           <div>
-            <h1 className="text-2xl sm:text-3xl font-black tracking-wider text-stone-100">VINTAGE BARBER LOUNGE</h1>
+            <h1 className="text-2xl sm:text-3xl font-black tracking-wider text-stone-100">{SALON_CONFIG.fullName}</h1>
             <p className="text-amber-500 text-sm font-semibold tracking-widest uppercase">Live Waiting Queue</p>
           </div>
         </div>
@@ -132,7 +133,7 @@ export default function QueueDisplayPage() {
                 </div>
 
                 <div className="pt-3 border-t border-stone-800/80 text-xs text-amber-500 font-semibold">
-                  Stylist: {v.stylist_name || 'Assigned Barber'}
+                  Stylist: {v.stylist_name || SALON_CONFIG.stylists[SALON_CONFIG.stylists.length - 1]}
                 </div>
               </div>
             ))}
@@ -141,7 +142,7 @@ export default function QueueDisplayPage() {
       </main>
 
       <footer className="text-center text-xs text-stone-600 border-t border-stone-900 pt-4">
-        Thank you for choosing Vintage Barber Lounge • Please wait for your token call
+        Thank you for choosing {SALON_CONFIG.fullName} • Please wait for your token call
       </footer>
     </div>
   );

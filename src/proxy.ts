@@ -4,6 +4,14 @@ import type { Database } from './lib/database.types';
 import { getSupabasePublicConfig } from './lib/supabase';
 
 export async function proxy(request: NextRequest) {
+  const pathname = request.nextUrl.pathname;
+  const isLoginPage = pathname === '/login';
+  const isApiRequest = pathname.startsWith('/api/');
+  if (!isLoginPage && !isApiRequest && pathname !== '/admin' && !pathname.startsWith('/admin/')
+    && pathname !== '/queue' && !pathname.startsWith('/queue/')) {
+    return NextResponse.next();
+  }
+
   const { url, anonKey } = getSupabasePublicConfig();
   let response = NextResponse.next({ request });
   const supabase = createServerClient<Database>(url, anonKey, {
@@ -24,8 +32,6 @@ export async function proxy(request: NextRequest) {
   });
 
   const { data: { user }, error } = await supabase.auth.getUser();
-  const isLoginPage = request.nextUrl.pathname === '/login';
-
   if (error) console.error('Session verification failed:', error);
   if (!user && !isLoginPage) {
     if (request.nextUrl.pathname.startsWith('/api/')) {
@@ -41,7 +47,7 @@ export async function proxy(request: NextRequest) {
   }
 
   if (user && isLoginPage) {
-    const redirectResponse = NextResponse.redirect(new URL('/', request.url));
+    const redirectResponse = NextResponse.redirect(new URL('/admin', request.url));
     for (const cookie of response.cookies.getAll()) {
       redirectResponse.cookies.set(cookie);
     }
@@ -53,6 +59,9 @@ export async function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/admin/:path*',
+    '/queue/:path*',
+    '/login',
+    '/api/:path*',
   ],
 };

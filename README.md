@@ -1,6 +1,6 @@
 # Saloon Management & Analytics OS
 
-Next.js App Router application for saloon reception, billing, queue management, compliance records, and owner analytics.
+White-label Next.js App Router application with a public customer booking website and an authenticated staff POS, queue, and owner analytics dashboard.
 
 ## Requirements
 
@@ -33,10 +33,14 @@ The Supabase public/anon key is intended to be visible to the browser. Database 
    ```
 
    Add further memberships as `admin` or `staff`. Do not add a membership-management service key to the application.
-4. Set `NEXT_PUBLIC_SALOON_ID` to the same saloon UUID and test with separate owner, staff, and unauthenticated accounts. Staff can use reception/queue features; only owners and admins can use `/admin` and the AI analytics API.
+4. Set `NEXT_PUBLIC_SALOON_ID` to the same saloon UUID and test with separate owner, staff, and unauthenticated accounts. The public website at `/` is available without signing in; staff sign in at `/login` and use the POS at `/admin` and queue at `/queue`. The registry at `/admin/registry` and AI analytics API are limited to owners and admins.
 5. Verify the applied RLS policies and RPC grants in the deployed Supabase project before accepting real customer data. The migration replaces existing policies on the app's five tables with membership-based policies.
 
 `NEXT_PUBLIC_SALOON_ID` selects the app's configured saloon, but it is not an authorization boundary. Supabase membership checks, RLS, and authorization inside database RPCs enforce access. Never expose a database service-role key to the browser or API route.
+
+## White-label configuration
+
+Edit [`src/lib/salon-config.ts`](./src/lib/salon-config.ts) to change the salon name, tagline, phone, address, hours, map links, and stylist list. The public menu reads services from Supabase; it displays a sample menu if public reads are unavailable, and customers confirm booking details with staff through WhatsApp.
 
 ## Local development and checks
 

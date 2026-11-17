@@ -28,7 +28,7 @@ export default function LoginPage() {
       }
 
       const requestedPath = new URLSearchParams(window.location.search).get('next');
-      let safePath = '/';
+      let safePath = '/admin';
       if (requestedPath) {
         const candidate = new URL(requestedPath, window.location.origin);
         if (candidate.origin === window.location.origin) {
