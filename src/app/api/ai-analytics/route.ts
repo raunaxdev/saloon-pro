@@ -57,9 +57,11 @@ function getErrorDetails(error: unknown): { status: number | 'unknown'; message:
   return { status, message };
 }
 
-function isModelNotFoundError(error: unknown): boolean {
+function shouldFallbackModel(error: unknown): boolean {
   const details = getErrorDetails(error);
-  return details.status === 404 && /model[\s\S]*not found|not found[\s\S]*model/i.test(details.message);
+  return details.status === 429
+    || details.status === 503
+    || (details.status === 404 && /model[\s\S]*not found|not found[\s\S]*model/i.test(details.message));
 }
 
 async function generateWithModelFallback<T>(generate: (model: string) => Promise<T>): Promise<T> {
@@ -67,8 +69,10 @@ async function generateWithModelFallback<T>(generate: (model: string) => Promise
     try {
       return await generate(model);
     } catch (error: unknown) {
-      if (index === GEMINI_MODELS.length - 1 || !isModelNotFoundError(error)) throw error;
-      console.warn(`Gemini model ${model} was not found; trying ${GEMINI_MODELS[index + 1]}.`);
+      if (index === GEMINI_MODELS.length - 1 || !shouldFallbackModel(error)) throw error;
+      console.warn(
+        `Gemini model ${model} returned HTTP ${getErrorDetails(error).status}; trying ${GEMINI_MODELS[index + 1]}.`,
+      );
     }
   }
   throw new Error('No Gemini models are configured.');
