@@ -80,6 +80,16 @@ function boundedText(value: unknown, maxLength: number): string | null {
   return value.trim();
 }
 
+function getErrorDetails(error: unknown): { status: number | 'unknown'; message: string } {
+  const status = isRecord(error) && typeof error.status === 'number' ? error.status : 'unknown';
+  const message = error instanceof Error
+    ? error.message
+    : isRecord(error) && typeof error.message === 'string'
+      ? error.message
+      : String(error);
+  return { status, message };
+}
+
 function getJpegDimensions(base64: string): { width: number; height: number } | null {
   const bytes = Buffer.from(base64, 'base64');
   if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
@@ -308,8 +318,9 @@ Return only valid JSON with this shape:
     }
     return jsonResponse(result);
   } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message.toLowerCase() : '';
-    console.error('AI style advisor request failed:', error instanceof Error ? error.name : 'Unknown error');
+    const details = getErrorDetails(error);
+    const errorMessage = details.message.toLowerCase();
+    console.error('AI style advisor upstream Gemini error:', details);
     if (/api.?key.*(invalid|not valid)|invalid.*api.?key|unauthorized|permission denied/.test(errorMessage)) {
       return jsonResponse({ error: 'The AI service credentials are invalid. Please contact the salon.' }, 503);
     }
