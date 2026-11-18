@@ -207,6 +207,7 @@ export interface Database {
           p_stylist_name: string;
           p_status: VisitStatus;
           p_sanitation_verified: boolean;
+          p_utr_number?: string | null;
         };
         Returns: {
           id: string;

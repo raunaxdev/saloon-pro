@@ -6,6 +6,7 @@ import { supabase } from '../../lib/supabase/client';
 import { SignOutButton } from '../../components/sign-out-button';
 import { SALON_CONFIG } from '../../lib/salon-config';
 import type { PaymentMethod, PaymentStatus, VisitStatus } from '../../lib/database.types';
+import { QRCodeSVG } from 'qrcode.react';
 import Link from 'next/link';
 import {
   Scissors, UserPlus, CreditCard, LayoutDashboard,
@@ -92,6 +93,7 @@ export default function SaloonApp() {
   const [services, setServices] = useState<ServiceItem[]>([]);
   const [customers, setCustomers] = useState<CustomerItem[]>([]);
   const [visits, setVisits] = useState<VisitItem[]>([]);
+  const [upiProfile, setUpiProfile] = useState<{ upi_id: string; upi_payee_name: string | null } | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
   const [actionError, setActionError] = useState('');
   const [receiptError, setReceiptError] = useState('');
@@ -109,6 +111,7 @@ export default function SaloonApp() {
   const [existingClient, setExistingClient] = useState<CustomerItem | null>(null);
   const [selectedServices, setSelectedServices] = useState<ServiceItem[]>([]);
   const [paymentMode, setPaymentMode] = useState<'Cash' | 'UPI' | 'Card'>('UPI');
+  const [utrNumber, setUtrNumber] = useState('');
   const [selectedStylist, setSelectedStylist] = useState<string>(SALON_CONFIG.stylists[0]);
   const [queueNotice, setQueueNotice] = useState('');
 
@@ -140,7 +143,7 @@ export default function SaloonApp() {
 
     try {
       const saloonId = getSaloonId();
-      const [servicesData, customersData, visitsData] = await Promise.all([
+      const [servicesData, customersData, visitsData, upiData] = await Promise.all([
         fetchAllRows((from, to) => supabase
           .from('services')
           .select('*')
@@ -157,12 +160,25 @@ export default function SaloonApp() {
           .eq('saloon_id', saloonId)
           .order('created_at', { ascending: false })
           .range(from, to)),
+        supabase
+          .from('saloons')
+          .select('upi_id,upi_payee_name')
+          .eq('id', saloonId)
+          .maybeSingle(),
       ]);
 
       if (isMountedRef.current && requestId === loadRequestRef.current) {
         setServices(servicesData as ServiceItem[]);
         setCustomers(customersData as CustomerItem[]);
         setVisits((visitsData as VisitItem[]).map(normalizeVisit));
+        if (upiData.error) {
+          console.warn('Saloon UPI details are unavailable.', upiData.error);
+          setUpiProfile(null);
+        } else if (upiData.data?.upi_id?.trim()) {
+          setUpiProfile({ upi_id: upiData.data.upi_id, upi_payee_name: upiData.data.upi_payee_name });
+        } else {
+          setUpiProfile(null);
+        }
         setApiError(null);
       }
     } catch (error) {
@@ -218,6 +234,15 @@ export default function SaloonApp() {
   };
 
   const totalBill = selectedServices.reduce((sum, item) => sum + Number(item.price || 0), 0);
+  const upiUri = upiProfile
+    ? `upi://pay?${new URLSearchParams({
+      pa: upiProfile.upi_id,
+      pn: upiProfile.upi_payee_name?.trim() || SALON_CONFIG.fullName,
+      am: totalBill.toFixed(2),
+      cu: 'INR',
+      tn: 'SalonCounterBill',
+    }).toString()}`
+    : '';
 
   const sendWhatsAppBill = (
     clientPhone: string,
@@ -252,6 +277,10 @@ export default function SaloonApp() {
       setActionError('Verify UV equipment sterilization before saving the visit.');
       return;
     }
+    if (paymentMode === 'UPI' && utrNumber && !/^\d{12}$/.test(utrNumber)) {
+      setActionError('Enter exactly 12 digits for the UPI Transaction ID / UTR, or leave it blank.');
+      return;
+    }
     if (savingVisit) return;
 
     setSavingVisit(true);
@@ -271,6 +300,7 @@ export default function SaloonApp() {
         p_stylist_name: selectedStylist,
         p_status: status,
         p_sanitation_verified: sterilizedEquipment,
+        p_utr_number: paymentMode === 'UPI' && utrNumber ? utrNumber : null,
       });
 
       if (rpcErr) throw rpcErr;
@@ -316,6 +346,7 @@ export default function SaloonApp() {
       setSelectedServices([]);
       setExistingClient(null);
       setSterilizedEquipment(false);
+      setUtrNumber('');
       setActionError('');
       await loadData();
     } catch (error) {
@@ -701,7 +732,11 @@ export default function SaloonApp() {
                         {(['UPI', 'Cash', 'Card'] as const).map(mode => (
                           <button
                             key={mode}
-                            onClick={() => setPaymentMode(mode)}
+                            type="button"
+                            onClick={() => {
+                              setPaymentMode(mode);
+                              if (mode !== 'UPI') setUtrNumber('');
+                            }}
                             className={`py-1.5 rounded text-xs font-medium border transition ${paymentMode === mode ? 'bg-amber-600 border-amber-600 text-stone-950' : 'bg-[#0f0d0e] border-stone-800 text-stone-400'}`}
                           >
                             {mode}
@@ -709,6 +744,37 @@ export default function SaloonApp() {
                         ))}
                       </div>
                     </div>
+                    {paymentMode === 'UPI' && totalBill > 0 && (
+                      upiProfile ? (
+                        <div className="flex flex-col items-center gap-3 rounded-lg border border-stone-800 bg-[#0f0d0e] p-3">
+                          <QRCodeSVG value={upiUri} size={150} level="M" includeMargin aria-label="UPI payment QR code for salon counter bill" />
+                          <p className="text-center text-xs text-stone-300">
+                            Pay to <span className="font-semibold text-stone-100">{upiProfile.upi_id}</span>
+                          </p>
+                          <label className="w-full text-xs text-stone-400">
+                            UPI Transaction ID / UTR (optional)
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              autoComplete="off"
+                              maxLength={12}
+                              pattern="[0-9]{12}"
+                              value={utrNumber}
+                              onChange={event => {
+                                setUtrNumber(event.target.value.replace(/\D/g, '').slice(0, 12));
+                                setActionError('');
+                              }}
+                              placeholder="12-digit UTR / reference"
+                              className="mt-1.5 w-full rounded-lg border border-stone-700 bg-[#181517] px-3 py-2 text-sm text-stone-100 outline-none focus:border-amber-500"
+                            />
+                          </label>
+                        </div>
+                      ) : (
+                        <p className="text-center text-[11px] text-stone-500">
+                          UPI details are not configured for this salon yet.
+                        </p>
+                      )
+                    )}
                   </div>
                 </div>
 
