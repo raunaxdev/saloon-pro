@@ -4,6 +4,7 @@ import { createBrowserClient } from '@supabase/ssr';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import NextImage from 'next/image';
+import { QRCodeSVG } from 'qrcode.react';
 import { getSalonWhatsAppPhone, SALON_CONFIG } from '../lib/salon-config';
 import { getSaloonId, getSupabasePublicConfig } from '../lib/supabase';
 import type { Database } from '../lib/database.types';
@@ -45,15 +46,22 @@ const TIME_SLOTS = [
 
 export default function PublicBookingPage() {
   const [services, setServices] = useState<ServiceItem[]>(FALLBACK_SERVICES);
+  const [serviceMenuAvailable, setServiceMenuAvailable] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [serviceNotice, setServiceNotice] = useState(
-    'Showing a sample menu. Please confirm current prices when you arrive.',
+    'Showing sample prices. The live menu is required to save an online booking.',
   );
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState<'upi' | 'pay_at_salon'>('pay_at_salon');
+  const [utrNumber, setUtrNumber] = useState('');
+  const [upiProfile, setUpiProfile] = useState<{ upi_id: string; upi_payee_name: string | null } | null>(null);
   const [bookingDate, setBookingDate] = useState('');
   const [timeSlot, setTimeSlot] = useState('');
   const [bookingError, setBookingError] = useState('');
+  const [bookingWhatsAppUrl, setBookingWhatsAppUrl] = useState('');
+  const [copiedUpiId, setCopiedUpiId] = useState(false);
+  const [bookingSubmitting, setBookingSubmitting] = useState(false);
   const [selfie, setSelfie] = useState('');
   const [selfieProcessing, setSelfieProcessing] = useState(false);
   const [faceShape, setFaceShape] = useState('');
@@ -69,12 +77,40 @@ export default function PublicBookingPage() {
     [selectedIds, services],
   );
   const salonWhatsAppPhone = getSalonWhatsAppPhone();
+  const upiUri = useMemo(() => {
+    if (!upiProfile) return '';
+    const params = new URLSearchParams({
+      pa: upiProfile.upi_id,
+      pn: upiProfile.upi_payee_name?.trim() || SALON_CONFIG.fullName,
+      am: total.toFixed(2),
+      cu: 'INR',
+      tn: 'SalonBooking',
+    });
+    return `upi://pay?${params.toString()}`;
+  }, [total, upiProfile]);
 
   useEffect(() => {
     let active = true;
     try {
       const { url, anonKey } = getSupabasePublicConfig();
       const supabase = createBrowserClient<Database>(url, anonKey);
+      void supabase
+        .from('saloons')
+        .select('upi_id,upi_payee_name')
+        .eq('id', getSaloonId())
+        .maybeSingle()
+        .then(({ data, error }) => {
+          if (!active) return;
+          if (error) {
+            console.warn('Public UPI payment details are unavailable.', error);
+            return;
+          }
+          if (data?.upi_id?.trim()) {
+            setUpiProfile({ upi_id: data.upi_id, upi_payee_name: data.upi_payee_name });
+          }
+        }, (error: unknown) => {
+          if (active) console.warn('Public UPI payment details are unavailable.', error);
+        });
       void supabase
         .from('services')
         .select('id,service_name,price,category')
@@ -85,18 +121,19 @@ export default function PublicBookingPage() {
           if (!active) return;
           if (error) {
             console.warn('Public service menu is unavailable; using the sample menu.', error);
-            setServiceNotice('Showing a sample menu. Please confirm current prices when you arrive.');
+            setServiceNotice('Showing sample prices. The live menu is required to save an online booking.');
           } else if (data?.length) {
             setServices(data);
             setSelectedIds([]);
+            setServiceMenuAvailable(true);
             setServiceNotice('');
           } else {
-            setServiceNotice('Showing a sample menu. Please confirm current prices when you arrive.');
+            setServiceNotice('Showing sample prices. The live menu is required to save an online booking.');
           }
         }, (error: unknown) => {
           if (!active) return;
           console.warn('Public service menu is unavailable; using the sample menu.', error);
-          setServiceNotice('Showing a sample menu. Please confirm current prices when you arrive.');
+          setServiceNotice('Showing sample prices. The live menu is required to save an online booking.');
         });
     } catch (error) {
       console.warn('Public service menu is unavailable; using the sample menu.', error);
@@ -114,9 +151,15 @@ export default function PublicBookingPage() {
   }, []);
 
   const toggleService = (id: string) => {
-    setSelectedIds(current => current.includes(id)
-      ? current.filter(selectedId => selectedId !== id)
-      : [...current, id]);
+    setSelectedIds(current => {
+      if (current.includes(id)) return current.filter(selectedId => selectedId !== id);
+      if (current.length >= 20) {
+        setBookingError('A booking can include at most 20 services.');
+        return current;
+      }
+      setBookingError('');
+      return [...current, id];
+    });
   };
 
   const resizeSelfie = async (file: File) => {
@@ -214,11 +257,16 @@ export default function PublicBookingPage() {
     }, 2200);
   };
 
-  const confirmBooking = (event: FormEvent<HTMLFormElement>) => {
+  const confirmBooking = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (bookingSubmitting) return;
     const selectedServices = services.filter(service => selectedIds.includes(service.id));
     if (!selectedServices.length) {
       setBookingError('Choose at least one service before requesting an appointment.');
+      return;
+    }
+    if (!serviceMenuAvailable) {
+      setBookingError('The live service menu is unavailable, so this booking cannot be saved. Refresh the page or contact the salon.');
       return;
     }
     if (!customerName.trim()) {
@@ -240,29 +288,73 @@ export default function PublicBookingPage() {
       setBookingError('Choose a valid appointment time.');
       return;
     }
+    if (paymentMethod === 'upi' && !upiProfile) {
+      setBookingError('Direct UPI payments are not configured. Please choose Pay at Salon.');
+      return;
+    }
+    if (paymentMethod === 'upi' && !/^\d{12}$/.test(utrNumber)) {
+      setBookingError('Enter the 12-digit UPI Transaction ID / UTR number to continue.');
+      return;
+    }
+    if (paymentMethod === 'upi' && total <= 0) {
+      setBookingError('UPI payment requires a total greater than ₹0.');
+      return;
+    }
     if (!salonWhatsAppPhone) {
       setBookingError('The salon WhatsApp number is not configured correctly. Please contact the salon by phone.');
       return;
     }
     setBookingError('');
+    setBookingWhatsAppUrl('');
+    const whatsappWindow = window.open('about:blank', '_blank');
+    setBookingSubmitting(true);
 
-    const message = [
-      `Hello ${SALON_CONFIG.fullName}, I would like to book an appointment.`,
-      '',
-      `Name: ${customerName.trim()}`,
-      `Callback phone: +91 ${customerPhone}`,
-      `Date: ${bookingDate}`,
-      `Time: ${timeSlot}`,
-      'Services:',
-      ...selectedServices.map(service => `- ${service.service_name} (₹${Number(service.price).toLocaleString('en-IN')})`),
-      `Estimated total: ₹${total.toLocaleString('en-IN')}`,
-    ].join('\n');
+    try {
+      const { url, anonKey } = getSupabasePublicConfig();
+      const supabase = createBrowserClient<Database>(url, anonKey);
+      const { data, error } = await supabase.rpc('create_public_booking', {
+        p_saloon_id: getSaloonId(),
+        p_customer_name: customerName.trim(),
+        p_phone: customerPhone,
+        p_service_ids: selectedServices.map(service => service.id),
+        p_expected_total: total,
+        p_payment_method: paymentMethod,
+        p_utr_number: paymentMethod === 'upi' ? utrNumber : null,
+        p_booking_date: bookingDate,
+        p_time_slot: timeSlot,
+      });
+      if (error) throw error;
+      const createdVisit = data?.[0];
+      if (!createdVisit) throw new Error('The booking was not saved.');
 
-    window.open(
-      `https://wa.me/${salonWhatsAppPhone}?text=${encodeURIComponent(message)}`,
-      '_blank',
-      'noopener,noreferrer',
-    );
+      const message = [
+        `Hello ${SALON_CONFIG.fullName}, I would like to book an appointment.`,
+        '',
+        `Name: ${customerName.trim()}`,
+        `Callback phone: +91 ${customerPhone}`,
+        `Date: ${bookingDate}`,
+        `Time: ${timeSlot}`,
+        'Services:',
+        ...selectedServices.map(service => `- ${service.service_name} (₹${Number(service.price).toLocaleString('en-IN')})`),
+        `Estimated total: ₹${Number(createdVisit.total_amount).toLocaleString('en-IN')}`,
+        `Payment method: ${paymentMethod === 'upi' ? 'UPI (paid; pending salon verification)' : 'Pay at Salon'}`,
+        `UPI Transaction ID / UTR: ${paymentMethod === 'upi' ? utrNumber : 'Not applicable'}`,
+        `Booking reference: ${createdVisit.id}`,
+      ].join('\n');
+      const whatsappUrl = `https://wa.me/${salonWhatsAppPhone}?text=${encodeURIComponent(message)}`;
+      if (whatsappWindow) {
+        whatsappWindow.location.href = whatsappUrl;
+      } else {
+        setBookingWhatsAppUrl(whatsappUrl);
+      }
+      setBookingError('');
+    } catch (error) {
+      whatsappWindow?.close();
+      console.error('Failed to save public booking:', error);
+      setBookingError(error instanceof Error ? error.message : 'Could not save your booking. Please retry.');
+    } finally {
+      setBookingSubmitting(false);
+    }
   };
 
   return (
@@ -459,7 +551,7 @@ export default function PublicBookingPage() {
           <div className="flex flex-col justify-between gap-3 border-b border-stone-800 pb-5 sm:flex-row sm:items-center">
             <div>
               <h3 className="text-xl font-bold">Request your appointment</h3>
-              <p className="mt-1 text-xs text-stone-500">Your booking is confirmed directly with our team on WhatsApp.</p>
+              <p className="mt-1 text-xs text-stone-500">Your appointment request is saved and shared with our team on WhatsApp.</p>
             </div>
             <div className="text-lg font-black text-amber-400">Estimated total: ₹{total.toLocaleString('en-IN')}</div>
           </div>
@@ -498,9 +590,93 @@ export default function PublicBookingPage() {
               </select>
             </label>
           </div>
+          <fieldset className="mb-5">
+            <legend className="mb-3 text-xs font-semibold text-stone-300">Choose a payment option</legend>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                disabled={!upiProfile}
+                aria-pressed={paymentMethod === 'upi'}
+                onClick={() => { setPaymentMethod('upi'); setBookingError(''); }}
+                className={`rounded-lg border p-4 text-left transition ${paymentMethod === 'upi' ? 'border-amber-500 bg-amber-950/30' : 'border-stone-700 bg-[#0f0d0e]'} disabled:cursor-not-allowed disabled:opacity-50`}
+              >
+                <span className="block text-sm font-bold text-stone-100">Pay Now via UPI (Instant QR / App)</span>
+                <span className="mt-1 block text-xs text-stone-400">
+                  {upiProfile ? 'Direct payment to the salon, with no gateway.' : 'UPI payment is not configured for this salon.'}
+                </span>
+              </button>
+              <button
+                type="button"
+                aria-pressed={paymentMethod === 'pay_at_salon'}
+                onClick={() => { setPaymentMethod('pay_at_salon'); setBookingError(''); }}
+                className={`rounded-lg border p-4 text-left transition ${paymentMethod === 'pay_at_salon' ? 'border-amber-500 bg-amber-950/30' : 'border-stone-700 bg-[#0f0d0e]'}`}
+              >
+                <span className="block text-sm font-bold text-stone-100">Pay at Salon</span>
+                <span className="mt-1 block text-xs text-stone-400">Pay when you arrive for your appointment.</span>
+              </button>
+            </div>
+          </fieldset>
+          {paymentMethod === 'upi' && upiProfile && (
+            <div className="mb-5 grid gap-5 rounded-xl border border-amber-900/40 bg-[#100e0f] p-4 sm:grid-cols-[auto_1fr] sm:items-center">
+              <div className="w-fit rounded-lg bg-white p-3">
+                <QRCodeSVG value={upiUri} size={192} level="M" includeMargin aria-label="UPI payment QR code" />
+              </div>
+              <div>
+                <h4 className="font-bold text-stone-100">Pay ₹{total.toLocaleString('en-IN')} directly to {upiProfile.upi_payee_name?.trim() || SALON_CONFIG.fullName}</h4>
+                <p className="mt-1 break-all text-sm text-stone-300">UPI ID: {upiProfile.upi_id}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(upiProfile.upi_id);
+                        setCopiedUpiId(true);
+                        window.setTimeout(() => setCopiedUpiId(false), 1800);
+                      } catch (error) {
+                        console.error('Could not copy the UPI ID:', error);
+                        setBookingError('Could not copy the UPI ID. Please copy it manually.');
+                      }
+                    }}
+                    className="rounded-lg border border-stone-600 px-4 py-2 text-sm font-semibold text-stone-200 transition hover:border-amber-500"
+                  >
+                    {copiedUpiId ? 'UPI ID Copied' : 'Copy UPI ID'}
+                  </button>
+                  <a
+                    href={upiUri}
+                    className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-stone-950 transition hover:bg-amber-400 sm:hidden"
+                  >
+                    Open UPI App
+                  </a>
+                </div>
+                <label className="mt-4 block text-xs font-semibold text-stone-300">
+                  12-digit UPI Transaction ID / UTR number
+                  <input
+                    required
+                    inputMode="numeric"
+                    autoComplete="off"
+                    pattern="[0-9]{12}"
+                    maxLength={12}
+                    value={utrNumber}
+                    onChange={event => {
+                      setUtrNumber(event.target.value.replace(/\D/g, '').slice(0, 12));
+                      setBookingError('');
+                    }}
+                    className="mt-2 w-full rounded-lg border border-stone-700 bg-[#0f0d0e] px-3 py-3 text-sm text-stone-100 outline-none focus:border-amber-500 sm:max-w-sm"
+                    placeholder="Enter UTR after completing payment"
+                  />
+                </label>
+                <p className="mt-2 text-xs text-stone-500">The salon will verify your UTR before marking this payment as received.</p>
+              </div>
+            </div>
+          )}
           {bookingError && <p role="alert" className="mb-4 text-sm text-red-300">{bookingError}</p>}
-          <button type="submit" disabled={!selectedIds.length} className="w-full rounded-lg bg-amber-500 px-6 py-3.5 text-sm font-black text-stone-950 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto">
-            Confirm via WhatsApp
+          {bookingWhatsAppUrl && (
+            <a href={bookingWhatsAppUrl} target="_blank" rel="noreferrer" className="mb-4 inline-flex rounded-lg bg-emerald-700 px-4 py-3 text-sm font-bold text-white transition hover:bg-emerald-600">
+              Booking saved — Open WhatsApp
+            </a>
+          )}
+          <button type="submit" disabled={!selectedIds.length || bookingSubmitting} className="w-full rounded-lg bg-amber-500 px-6 py-3.5 text-sm font-black text-stone-950 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto">
+            {bookingSubmitting ? 'Saving Booking…' : 'Confirm Booking via WhatsApp'}
           </button>
         </form>
       </section>

@@ -5,7 +5,7 @@ import { fetchAllRows, getSaloonId } from '../../lib/supabase';
 import { supabase } from '../../lib/supabase/client';
 import { SignOutButton } from '../../components/sign-out-button';
 import { SALON_CONFIG } from '../../lib/salon-config';
-import type { VisitStatus } from '../../lib/database.types';
+import type { PaymentMethod, PaymentStatus, VisitStatus } from '../../lib/database.types';
 import Link from 'next/link';
 import {
   Scissors, UserPlus, CreditCard, LayoutDashboard,
@@ -35,6 +35,10 @@ interface VisitItem {
   services_done: ServiceItem[] | null;
   total_amount: number;
   payment_mode: 'Cash' | 'UPI' | 'Card';
+  payment_method: PaymentMethod | null;
+  payment_status: PaymentStatus | null;
+  utr_number: string | null;
+  amount_paid: number;
   status: 'Waiting' | 'In-Progress' | 'Completed';
   stylist_name?: string | null;
   notes?: string | null;
@@ -93,6 +97,7 @@ export default function SaloonApp() {
   const [receiptError, setReceiptError] = useState('');
   const [savingVisit, setSavingVisit] = useState(false);
   const [updatingVisitId, setUpdatingVisitId] = useState<string | null>(null);
+  const [verifyingPaymentId, setVerifyingPaymentId] = useState<string | null>(null);
   const isMountedRef = useRef(false);
   const loadRequestRef = useRef(0);
   const loadAbortControllerRef = useRef<AbortController | null>(null);
@@ -376,6 +381,25 @@ export default function SaloonApp() {
       setActionError('Could not update the queue. Please retry.');
     } finally {
       setUpdatingVisitId(null);
+    }
+  };
+
+  const verifyVisitPayment = async (visitId: string) => {
+    if (verifyingPaymentId) return;
+    setVerifyingPaymentId(visitId);
+    setActionError('');
+    try {
+      const { error } = await supabase.rpc('verify_visit_payment', {
+        p_saloon_id: getSaloonId(),
+        p_visit_id: visitId,
+      });
+      if (error) throw error;
+      await loadData();
+    } catch (error) {
+      console.error('Failed to verify UPI payment:', error);
+      setActionError('Could not verify this payment. Refresh the visits and retry.');
+    } finally {
+      setVerifyingPaymentId(null);
     }
   };
 
@@ -961,7 +985,10 @@ export default function SaloonApp() {
                       <th className="p-3">Services</th>
                       <th className="p-3">Stylist</th>
                       <th className="p-3">Sanitation Check</th>
+                      <th className="p-3">Payment Method / UTR</th>
+                      <th className="p-3">Payment Status</th>
                       <th className="p-3 text-right">Amount</th>
+                      <th className="p-3">Payment Action</th>
                       <th className="p-3">Retention</th>
                     </tr>
                   </thead>
@@ -984,7 +1011,24 @@ export default function SaloonApp() {
                             </span>
                           )}
                         </td>
+                        <td className="p-3 text-stone-300">
+                          <span className="block">{v.payment_method === 'upi' ? 'Direct UPI' : v.payment_method === 'pay_at_salon' ? 'Pay at Salon' : v.payment_mode}</span>
+                          {v.utr_number && <span className="mt-1 block font-mono text-[10px] text-stone-500">UTR: {v.utr_number}</span>}
+                        </td>
+                        <td className="p-3 text-stone-300">{v.payment_status?.replace(/_/g, ' ') || 'Not tracked'}</td>
                         <td className="p-3 font-bold text-stone-100 text-right">₹{Number(v.total_amount || 0).toLocaleString()}</td>
+                        <td className="p-3">
+                          {v.payment_method === 'upi' && v.payment_status === 'verification_pending' && (
+                            <button
+                              type="button"
+                              disabled={verifyingPaymentId !== null}
+                              onClick={() => void verifyVisitPayment(v.id)}
+                              className="whitespace-nowrap rounded-md bg-emerald-700 px-3 py-1.5 font-bold text-white transition hover:bg-emerald-600 disabled:cursor-wait disabled:opacity-50"
+                            >
+                              {verifyingPaymentId === v.id ? 'Verifying…' : 'Verify Payment'}
+                            </button>
+                          )}
+                        </td>
                         <td className="p-3 print:hidden">
                           {v.customers?.phone && /^[6-9]\d{9}$/.test(v.customers.phone.replace(/\D/g, '')) && (
                             <a

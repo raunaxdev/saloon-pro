@@ -7,6 +7,8 @@ export type Json =
   | Json[];
 
 export type PaymentMode = 'Cash' | 'UPI' | 'Card';
+export type PaymentMethod = 'upi' | 'pay_at_salon';
+export type PaymentStatus = 'unpaid' | 'verification_pending' | 'paid';
 export type VisitStatus = 'Waiting' | 'In-Progress' | 'Completed';
 
 export interface Database {
@@ -51,6 +53,8 @@ export interface Database {
           trade_license_no: string;
           license_expiry_date: string;
           sanitation_verified: boolean;
+          upi_id: string | null;
+          upi_payee_name: string | null;
         };
         Insert: {
           id?: string;
@@ -60,6 +64,8 @@ export interface Database {
           trade_license_no: string;
           license_expiry_date: string;
           sanitation_verified?: boolean;
+          upi_id?: string | null;
+          upi_payee_name?: string | null;
         };
         Update: {
           id?: string;
@@ -69,6 +75,8 @@ export interface Database {
           trade_license_no?: string;
           license_expiry_date?: string;
           sanitation_verified?: boolean;
+          upi_id?: string | null;
+          upi_payee_name?: string | null;
         };
         Relationships: [];
       };
@@ -125,6 +133,10 @@ export interface Database {
           services_done: { id: string; service_name: string; price: number; category: string }[];
           total_amount: number;
           payment_mode: PaymentMode;
+          payment_method: PaymentMethod | null;
+          payment_status: PaymentStatus | null;
+          utr_number: string | null;
+          amount_paid: number;
           status: VisitStatus;
           stylist_name: string | null;
           notes: string | null;
@@ -138,6 +150,10 @@ export interface Database {
           services_done: { id: string; service_name: string; price: number; category: string }[];
           total_amount: number;
           payment_mode: PaymentMode;
+          payment_method?: PaymentMethod;
+          payment_status?: PaymentStatus;
+          utr_number?: string | null;
+          amount_paid?: number;
           status: VisitStatus;
           stylist_name?: string | null;
           notes?: string | null;
@@ -151,6 +167,10 @@ export interface Database {
           services_done?: { id: string; service_name: string; price: number; category: string }[];
           total_amount?: number;
           payment_mode?: PaymentMode;
+          payment_method?: PaymentMethod;
+          payment_status?: PaymentStatus;
+          utr_number?: string | null;
+          amount_paid?: number;
           status?: VisitStatus;
           stylist_name?: string | null;
           notes?: string | null;
@@ -194,6 +214,32 @@ export interface Database {
           services_done: Json;
           created_at: string;
         }[];
+      };
+      create_public_booking: {
+        Args: {
+          p_saloon_id: string;
+          p_customer_name: string;
+          p_phone: string;
+          p_service_ids: string[];
+          p_expected_total: number;
+          p_payment_method: PaymentMethod;
+          p_utr_number: string | null;
+          p_booking_date: string;
+          p_time_slot: string;
+        };
+        Returns: {
+          id: string;
+          total_amount: number;
+          services_done: Json;
+          created_at: string;
+        }[];
+      };
+      verify_visit_payment: {
+        Args: {
+          p_saloon_id: string;
+          p_visit_id: string;
+        };
+        Returns: undefined;
       };
       update_visit_status: {
         Args: {
